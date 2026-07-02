@@ -26,7 +26,7 @@ NAME_ODDS_KS = (0, 10, 20, 40)
 TOTAL_COMBOS = len(IND_KS) * len(ODDS_KS) * len(NAME_ODDS_KS)
 
 
-def eval_combo(ind_k, odds_k, name_odds_k, min_history=10):
+def eval_combo(ind_k, odds_k, name_odds_k, real, min_history=10):
     os.environ["ODDS_CALIB_STRENGTH"] = str(odds_k)
     os.environ["NAME_ODDS_STRENGTH"] = str(name_odds_k)
     os.environ["INDIVIDUAL_PRIOR_STRENGTH"] = str(ind_k)
@@ -36,7 +36,6 @@ def eval_combo(ind_k, odds_k, name_odds_k, min_history=10):
     import database as db; importlib.reload(db)
     import predictor; importlib.reload(predictor)
 
-    real = sorted(db.get_all_rounds_with_winner(), key=lambda r: r["id"])
     tmp = tempfile.mktemp(suffix=".db")
     orig = db.DATABASE_PATH
     db.DATABASE_PATH = tmp
@@ -71,13 +70,19 @@ def eval_combo(ind_k, odds_k, name_odds_k, min_history=10):
 
 
 if __name__ == "__main__":
+    import database as _db_once
+    # Lay lich su THẬT 1 lan duy nhat (khong doi theo ind_k/odds_k/name_odds_k)
+    # thay vi trong tung eval_combo() — tranh goi lai 80 lan (1 lan/to hop luoi
+    # quet), vi khi da cau hinh Turso moi lan la 1 round-trip mang.
+    real_rounds = sorted(_db_once.get_all_rounds_with_winner(), key=lambda r: r["id"])
+
     print(f"{'indK':>5}{'oddsK':>7}{'nameOddsK':>10}{'logloss':>10}{'brier':>9}{'top1':>8}{'roi_ev':>9}", flush=True)
     results = []
     n_total = 0
     for ik in IND_KS:
         for ok in ODDS_KS:
             for nok in NAME_ODDS_KS:
-                ll, t, n, br, roi = eval_combo(ik, ok, nok)
+                ll, t, n, br, roi = eval_combo(ik, ok, nok, real_rounds)
                 n_total = n
                 results.append((ll, br, t, ik, ok, nok, roi))
                 print(f"{ik:>5}{ok:>7}{nok:>10}{ll:>10.4f}{br:>9.4f}{t:>5}/{n}{roi:>+9.4f}", flush=True)

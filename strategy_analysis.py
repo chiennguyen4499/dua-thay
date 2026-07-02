@@ -224,11 +224,11 @@ def compute_model_picks(min_history=10):
             except OSError: pass
             # Lưới an toàn: _REPLAY_SOURCE CHỈ do hàm này sinh trong DB tạm. Nếu vì
             # bất cứ lý do gì (đua thread) có dòng lọt vào DB THẬT, dọn ngay.
+            # Đi qua db.clear_rounds_by_source() (không tự mở sqlite3.connect) để
+            # luôn dọn đúng backend đang cấu hình (local hoặc Turso).
             try:
-                _c = sqlite3.connect(orig, timeout=10.0)
-                _c.execute("DELETE FROM rounds WHERE source=?", (_REPLAY_SOURCE,))
-                _c.commit(); _c.close()
-            except sqlite3.Error:
+                db.clear_rounds_by_source(_REPLAY_SOURCE)
+            except Exception:
                 pass
     return picks
 

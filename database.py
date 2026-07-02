@@ -1,10 +1,85 @@
 import sqlite3
 import json
 from datetime import datetime
-from config import DATABASE_PATH, canonical_name
+from config import DATABASE_PATH, TURSO_DATABASE_URL, TURSO_AUTH_TOKEN, canonical_name
+
+# Path lúc import module — dùng để nhận biết khi backtest.py/tune_shrinkage.py/
+# strategy_analysis.py tạm tráo `database.DATABASE_PATH` sang 1 file SQLite tạm
+# (tempfile.mktemp) để replay hàng trăm lần. Khi đó PHẢI luôn dùng SQLite local
+# (nhanh, không round-trip mạng), bất kể đã cấu hình Turso hay chưa.
+_CONFIGURED_DB_PATH = DATABASE_PATH
+
+
+class _RemoteRow(dict):
+    """Row từ Turso: cho phép truy cập theo tên cột (row['x']) VÀ theo index
+    (row[0]), giống sqlite3.Row mà 18 hàm bên dưới đang dùng."""
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return list(self.values())[key]
+        return dict.__getitem__(self, key)
+
+
+class _RemoteCursor:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def _wrap(self, row):
+        if row is None:
+            return None
+        cols = [d[0] for d in self._cursor.description]
+        return _RemoteRow(zip(cols, row))
+
+    def fetchall(self):
+        return [self._wrap(r) for r in self._cursor.fetchall()]
+
+    def fetchone(self):
+        return self._wrap(self._cursor.fetchone())
+
+    @property
+    def rowcount(self):
+        return self._cursor.rowcount
+
+    @property
+    def lastrowid(self):
+        return self._cursor.lastrowid
+
+
+class _RemoteConn:
+    """Bọc kết nối libsql (Turso) để có API giống sqlite3.Connection: execute()
+    trả cursor có fetchall/fetchone trả row truy cập theo tên cột, và dùng được
+    như context manager (`with get_conn() as conn:`)."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, sql, params=()):
+        return _RemoteCursor(self._conn.execute(sql, params))
+
+    def commit(self):
+        self._conn.commit()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is None:
+            self._conn.commit()
+        # Không close: giống hành vi sqlite3 hiện tại, mỗi lời gọi tự mở kết
+        # nối mới và để tự dọn (đơn giản, phù hợp tần suất ghi thấp của app).
+
+
+def _is_remote() -> bool:
+    """True khi đang dùng DATABASE_PATH gốc (không bị backtest/tune tráo tạm)
+    VÀ đã cấu hình Turso."""
+    return DATABASE_PATH == _CONFIGURED_DB_PATH and bool(TURSO_DATABASE_URL)
 
 
 def get_conn():
+    if _is_remote():
+        import libsql
+        conn = libsql.connect(database=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
+        return _RemoteConn(conn)
     conn = sqlite3.connect(DATABASE_PATH, timeout=5.0)
     conn.row_factory = sqlite3.Row
     # WAL: cho phép bot (thread) và web (process riêng) đọc/ghi đồng thời
@@ -356,6 +431,24 @@ def get_teacher_name_odds_stats(name: str, odds: int) -> dict:
               AND teacher_name=? AND CAST(ROUND(teacher_multiplier) AS INTEGER)=?
         """, (name, odds)).fetchone()
     return {"appeared": row["appeared"], "won": row["won"] or 0}
+
+
+def clear_all_rounds() -> int:
+    """Xóa TOÀN BỘ dữ liệu trận (dùng khi Import CSV muốn nạp lại từ đầu).
+    Trả về số dòng đã xóa."""
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM rounds")
+        conn.commit()
+        return cur.rowcount
+
+
+def clear_rounds_by_source(source: str) -> int:
+    """Xóa các trận theo giá trị cột `source` (vd. dọn rác nguồn replay tạm
+    của strategy_analysis.py). Trả về số dòng đã xóa."""
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM rounds WHERE source=?", (source,))
+        conn.commit()
+        return cur.rowcount
 
 
 def source_round_id_exists(original_id: int, source: str = "csv_import") -> bool:

@@ -47,6 +47,12 @@ _db_path = os.getenv("DATABASE_PATH", "data/rounds.db")
 DATABASE_PATH = _db_path if os.path.isabs(_db_path) else os.path.join(_PROJECT_ROOT, _db_path)
 MIN_SAMPLES_FOR_PATTERN = int(os.getenv("MIN_SAMPLES_FOR_PATTERN", "3"))
 
+# Turso (database online dùng chung giữa bot trên PC và Web UI trên Streamlit
+# Cloud). Để trống 2 biến này thì hệ thống tự dùng SQLite local (DATABASE_PATH)
+# như trước — không bắt buộc phải có Turso mới chạy được.
+TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL", "")
+TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "")
+
 # Yêu quái trong game (tên từ CSV — dùng dấu gạch thay dấu cách)
 KNOWN_MONSTERS = [
     "Bach_cot_tinh",

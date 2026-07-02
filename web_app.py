@@ -4,12 +4,23 @@ Chạy: streamlit run web_app.py
 """
 
 import streamlit as st
+import os
+
+# Trên Streamlit Community Cloud, secrets khai báo ở Settings > Secrets nằm
+# trong st.secrets, không tự thành biến môi trường. Đẩy sang os.environ TRƯỚC
+# khi import config/database (2 module đó đọc env bằng os.getenv lúc import).
+try:
+    for _k in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN"):
+        if _k in st.secrets and not os.getenv(_k):
+            os.environ[_k] = st.secrets[_k]
+except Exception:
+    pass  # Chạy local không có secrets.toml -> bỏ qua, dùng .env như thường
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from PIL import Image
 import tempfile
-import os
 import io
 
 import database as db
@@ -781,8 +792,6 @@ with tab5:
     if uploaded_csv and st.button("📥 Import", type="primary"):
         with st.spinner("Đang import..."):
             import csv as csv_mod
-            import sqlite3
-            from config import DATABASE_PATH
             from import_csv import parse_rounds, import_rounds, TEACHER_NAME
 
             # Lưu file tạm
@@ -791,9 +800,7 @@ with tab5:
                 tmp_path = tmp.name
 
             if clear_before_import:
-                with sqlite3.connect(DATABASE_PATH) as conn:
-                    conn.execute("DELETE FROM rounds")
-                    conn.commit()
+                db.clear_all_rounds()
 
             rounds = parse_rounds(tmp_path)
             os.unlink(tmp_path)

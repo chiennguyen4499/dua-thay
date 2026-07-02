@@ -111,12 +111,8 @@ def main():
     db.init_db()
 
     if args.clear:
-        import sqlite3
-        from config import DATABASE_PATH
         print("[!!] Dang xoa database cu...")
-        with sqlite3.connect(DATABASE_PATH) as conn:
-            conn.execute("DELETE FROM rounds")
-            conn.commit()
+        db.clear_all_rounds()
         print("   Đã xóa.")
 
     print(f"[DOC] File: {args.filepath}")
