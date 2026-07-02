@@ -1,0 +1,827 @@
+"""
+Streamlit Web UI — Sư Phụ Chạy Mau Predictor
+Chạy: streamlit run web_app.py
+"""
+
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from PIL import Image
+import tempfile
+import os
+import io
+
+import database as db
+import predictor as pred
+from config import KNOWN_MONSTERS, KNOWN_TEACHERS
+
+db.init_db()
+
+
+@st.cache_data(show_spinner="Đang tính ROI mô hình (leave-one-out, ~chục giây)...")
+def _cached_model_picks(n_rounds_with_winner: int):
+    """LOO replay (TỐN KÉM ~chục giây) — cache theo SỐ TRẬN.
+
+    `n_rounds_with_winner` chỉ là khoá cache (phiên bản dữ liệu): khi thêm trận
+    mới, số này đổi → tự tính lại; nếu không, mọi rerun (kéo slider, chuyển tab,
+    reload) dùng lại kết quả cũ TỨC THÌ thay vì tính lại từ đầu.
+    """
+    import strategy_analysis as sa
+    return sa.compute_model_picks()
+
+st.set_page_config(
+    page_title="Sư Phụ Chạy Mau - Dự đoán",
+    page_icon="🎮",
+    layout="wide",
+)
+
+# ─── Sidebar: tổng quan + hướng dẫn nhanh ───────────────────
+with st.sidebar:
+    st.header("📊 Tổng quan")
+    _ov = db.get_overall_stats()
+    st.metric("Tổng trận có kết quả", _ov["total"])
+    _sc = st.columns(2)
+    _sc[0].metric("Thầy thoát", f"{_ov['teacher_win_rate']:.0f}%")
+    _sc[1].metric("Chờ nhập KQ", _ov["pending"])
+
+    # Dọn các trận chưa nhập kết quả (winner=NULL) — có xác nhận
+    if _ov["pending"] > 0:
+        if not st.session_state.get("confirm_clean"):
+            if st.button(f"🧹 Dọn {_ov['pending']} trận chưa có KQ", width="stretch"):
+                st.session_state["confirm_clean"] = True
+                st.rerun()
+        else:
+            st.warning(f"Xóa vĩnh viễn **{_ov['pending']}** trận chưa nhập kết quả?")
+            _cc = st.columns(2)
+            if _cc[0].button("✅ Xóa", type="primary", width="stretch"):
+                n = db.delete_pending_rounds()
+                st.session_state.pop("confirm_clean", None)
+                st.session_state.pop("pred", None)        # tránh trỏ tới trận đã xóa
+                st.session_state.pop("last_round_id", None)
+                st.toast(f"Đã xóa {n} trận chưa có KQ.")
+                st.rerun()
+            if _cc[1].button("Hủy", width="stretch"):
+                st.session_state.pop("confirm_clean", None)
+                st.rerun()
+
+    st.divider()
+    st.markdown(
+        "**Dùng nhanh**\n\n"
+        "1. Nhập 4 yêu quái + Thầy + bội số\n"
+        "2. Bấm **🔮 Dự đoán**\n"
+        "3. Sau trận, bấm nút **người thắng** ngay dưới kết quả\n\n"
+        "→ Bot học dần, dự đoán tốt hơn."
+    )
+
+st.title("🎮 Sư Phụ Chạy Mau — Hệ thống dự đoán")
+
+
+# ─── Helper: render 1 kết quả dự đoán (sống qua rerun + ghi KQ tại chỗ) ──
+METHOD_INFO = {
+    "pattern":    ("🟢", "Pattern lịch sử"),
+    "individual": ("🟡", "Thống kê cá nhân"),
+    "multiplier": ("🔴", "Ước tính theo odds"),
+}
+CONF_BADGE = {"cao": "🟢 Tin cậy cao", "trung binh": "🟡 Tin cậy TB", "thap": "🔴 Tin cậy thấp"}
+
+
+def render_prediction(state):
+    prediction = state["prediction"]
+    monsters = state["monsters"]
+    teacher = state["teacher"]
+    round_id = state["round_id"]
+
+    emoji, label = METHOD_INFO.get(prediction["method"], ("⚪", prediction["method"]))
+    st.info(f"{emoji} **{label}** — {prediction['sample_count']} mẫu  |  "
+            f"{CONF_BADGE.get(prediction.get('confidence', 'thap'), '')}  |  {prediction['message']}")
+    if prediction.get("confidence") == "thap" or prediction.get("top_gap", 1) < 0.06:
+        st.warning("⚠️ Dữ liệu còn ít hoặc các lựa chọn quá sát nhau. Game ngẫu nhiên cao "
+                   "— hãy coi là tham khảo, đừng cược nặng.")
+
+    # Khuyến nghị — ưu tiên EV (value betting)
+    rec = prediction["recommendation"]
+    ev_rec = prediction["best_value"]
+    col1, col2 = st.columns(2)
+    with col1:
+        if ev_rec["expected_value"] > 1.05:
+            st.success(f"💰 **Kèo giá trị (ưu tiên)**\n\n"
+                       f"### {ev_rec['name']}\n"
+                       f"**{ev_rec['multiplier']:g}x** · EV **{ev_rec['expected_value']:.2f}** · "
+                       f"thắng ~{ev_rec['probability']*100:.0f}%")
+            st.caption("⚠️ Thắng ít, trả cao → variance lớn. Cược nhẹ.")
+        else:
+            st.warning(f"💰 **Không có kèo +EV nổi bật**\n\n"
+                       f"EV tốt nhất chỉ **{ev_rec['expected_value']:.2f}** (<1) → cân nhắc **bỏ qua** trận.")
+    with col2:
+        st.info(f"🛡 **Kèo an toàn**\n\n"
+                f"### {rec['name']}\n"
+                f"**{rec['multiplier']:g}x** · {rec['probability']*100:.0f}% _(ROI dài hạn thường âm)_")
+
+    # Bảng chi tiết + biểu đồ
+    probs = prediction["probabilities"]
+    odds_map = {m["name"]: m["multiplier"] for m in monsters}
+    odds_map[teacher["name"]] = teacher["multiplier"]
+    rows = []
+    # Ưu tiên EV: sắp xếp từ kỳ vọng cao → thấp (EV = xác suất × bội).
+    sorted_chars = sorted(
+        probs.items(),
+        key=lambda x: x[1] * odds_map.get(x[0], 1.0),
+        reverse=True,
+    )
+    for rank, (name, prob) in enumerate(sorted_chars, 1):
+        is_t = name == teacher["name"]
+        detail = prediction["details"].get(name, {})
+        appeared = detail.get("appeared", 0)
+        won = detail.get("won", 0)
+        owr = detail.get("odds_win_rate")
+        oapp = detail.get("odds_appeared", 0)
+        rows.append({
+            "#": rank,
+            "Nhân vật": f"{'👨‍🏫' if is_t else '👹'} {name}",
+            "Odds": f"{odds_map.get(name, 0):g}x",
+            "Lịch sử": f"{won}/{appeared}" if appeared > 0 else "—",
+            "Bội này về": f"{owr*100:.0f}% ({oapp})" if owr is not None else "—",
+            "EV": prob * odds_map.get(name, 1.0),
+            "Xác suất (%)": prob * 100,
+        })
+    df = pd.DataFrame(rows)
+    st.dataframe(
+        df, width="stretch", hide_index=True,
+        column_config={
+            "Xác suất (%)": st.column_config.ProgressColumn(
+                "Xác suất", format="%.0f%%", min_value=0, max_value=100,
+            ),
+            "EV": st.column_config.NumberColumn("EV", format="%.2f", help="Kỳ vọng = xác suất × bội số. >1 là +EV"),
+            "Bội này về": st.column_config.TextColumn(
+                "Bội này về",
+                help="Tỷ lệ thắng THỰC TẾ của mọi nhân vật từng mang đúng giá trị bội này (số trong ngoặc = số mẫu). Tín hiệu calibration theo bội số.",
+            ),
+        },
+    )
+    with st.expander("📈 Biểu đồ xác suất"):
+        fig = px.bar(df, x="Nhân vật", y="Xác suất (%)",
+                     color="Xác suất (%)", color_continuous_scale="RdYlGn")
+        st.plotly_chart(fig, width="stretch")
+
+    # Tín hiệu tên×bội: để riêng (tham khảo) vì mẫu thường rất ít và CHƯA tác
+    # động vào dự đoán (trọng số tầng = 0 cho tới khi tune_shrinkage.py bật).
+    with st.expander("🔍 Tín hiệu tên×bội (tham khảo — chưa tác động dự đoán)"):
+        no_rows = []
+        for rank, (name, prob) in enumerate(sorted_chars, 1):
+            detail = prediction["details"].get(name, {})
+            napp = detail.get("name_odds_appeared", 0)
+            nwr = detail.get("name_odds_win_rate")
+            no_rows.append({
+                "Nhân vật": f"{'👨‍🏫' if name == teacher['name'] else '👹'} {name}",
+                "Bội": f"{odds_map.get(name, 0):g}x",
+                "Con này tại bội này về": f"{nwr*100:.0f}% ({detail.get('name_odds_won',0)}/{napp})" if napp > 0 else "— (chưa có mẫu)",
+            })
+        st.dataframe(pd.DataFrame(no_rows), width="stretch", hide_index=True)
+        st.caption(
+            "Tỷ lệ thắng THỰC TẾ của đúng nhân vật này khi mang đúng bội này. "
+            "Mẫu thường rất ít nên chỉ để tham khảo — tầng này sẽ **tự bật** vào dự "
+            "đoán khi `tune_shrinkage.py` xác nhận đủ tin (auto-ready)."
+        )
+
+    # ── Ghi kết quả NGAY tại đây (không cần đổi tab) ──
+    st.divider()
+    if state.get("recorded"):
+        st.success(f"✅ Đã lưu trận #{round_id}: **{state['recorded_label']}**. Bot đã học! 📈")
+    else:
+        st.markdown(f"**Trận #{round_id} — đua xong rồi, ai thắng?** (bấm để lưu)")
+        labels = [(f"monster{i+1}", m["name"]) for i, m in enumerate(monsters)]
+        labels.append(("teacher", "🏃 Thầy thoát"))
+        btn_cols = st.columns(len(labels))
+        for (slot, nm), bc in zip(labels, btn_cols):
+            if bc.button(nm, key=f"rec_{round_id}_{slot}", width="stretch"):
+                db.update_winner(round_id, slot)
+                state["recorded"] = slot
+                state["recorded_label"] = "Thầy thoát" if slot == "teacher" else nm
+                st.rerun()
+
+    if st.button("🔄 Dự đoán trận mới", key=f"clear_{round_id}"):
+        st.session_state.pop("pred", None)
+        st.rerun()
+
+
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "🔮 Dự đoán",
+    "📝 Nhập kết quả",
+    "📊 Thống kê",
+    "📋 Lịch sử",
+    "📂 Import CSV",
+])
+
+
+# ─── Tab 1: Dự đoán ──────────────────────────────────────────
+
+with tab1:
+    st.header("Dự đoán trận mới")
+
+    with st.expander("📌 Ghi nhớ: heuristic thủ công tốt nhất (lọc từ ~120 chiến lược)"):
+        st.caption("Ảnh chụp dữ liệu 163 trận (30/06/2026). Xếp theo **cận dưới CI 95%** — "
+                   "ưu tiên chiến lược bền, phạt ăn may. Cập nhật lại khi data tăng nhiều.")
+        st.markdown(
+            "**🥇 Lõi bền nhất — yêu quái bội 5:** cược mỗi khi có.  \n"
+            "→ thắng **36/82 (44%)** vs bội hàm ý 20%, ROI **+120%**, CI [+65%, +174%].\n\n"
+            "**🥈 Edge thứ 2 — yêu quái bội 9:** thắng **26%** vs hàm ý 11%, ROI **+135%**, "
+            "CI [+17%, +252%] (cao nhưng variance lớn hơn bội 5).\n\n"
+            "**👨‍🏫 Thầy: đúng ngưỡng ≥18** (không thấp/cao hơn) → cược Thầy. ROI +134%, CI [+20%, +262%].\n\n"
+            "**🔗 Chiến lược lai tốt nhất:** Thầy **≥18 → Thầy**; còn lại → **bội 5** "
+            "(nếu không có 5 thì bội 9). ROI **+127%**, CI [+42%, +222%].\n\n"
+            "**🤖 Model (LOO) để so:** ROI +66%, CI [+12%, +127%]."
+        )
+        st.markdown(
+            "**🏷️ Theo TÊN (chuẩn hơn theo bội):**  \n"
+            "🥇 **Cược mạnh mọi lúc:** **Bach_nhan_quan** (+176%, thắng 33%), "
+            "**Bach_tuong** (+75%, thắng **48%** — bền nhất).  \n"
+            "🎯 **Kèo vàng khi ở bội 5:** **Thanh_nguu** (thắng **59%**!), **Dai_bang_kim_si** (56%), "
+            "**Hoang_mi_vuong** (54%).  \n"
+            "⭐ **Bội 9:** **Hac_hung_tinh** (+238%, mẫu nhỏ 8 lần).  \n"
+            "☠️ **Không bao giờ cược:** **Duong_dai_tien**, **Tieu_toan_phong** (chỉ 4% thắng, lỗ chắc)."
+        )
+        st.warning(
+            "☠️ **TRÁNH bội 10:** thắng **0/46** trong lịch sử (ROI −100%).  \n"
+            "⚠️ **Bội 3 thực ra lỗ** (−9%) dù hay thắng — bội thấp, thắng không bù đủ.  \n"
+            "⚠️ Các bội 4, 6, 7, 8, 11, 12 ROI dương nhỏ nhưng **CI chạm âm** → không đáng tin, "
+            "chỉ \"ăn ké\" khi nằm chung dải với bội 5. Chỉ **bội 5 và 9** là tín hiệu thật.  \n"
+            "⚠️ Phần **\"Thầy≥18\"** variance lớn (chỉ ~13 lần thoát) — dễ thua 15-20 trận liền.",
+            icon="⚠️",
+        )
+
+    input_method = st.radio("Cách nhập thông tin:", ["✏️ Nhập tay", "📷 Upload ảnh"], horizontal=True)
+
+    monsters = []
+    teacher = None
+
+    if input_method == "✏️ Nhập tay":
+        st.subheader("4 Yêu Quái")
+        cols = st.columns(4)
+        all_known = sorted(KNOWN_MONSTERS)
+        for i, col in enumerate(cols):
+            with col:
+                name_opts = [""] + all_known
+                name = col.selectbox(f"Yêu quái {i+1}", options=name_opts, key=f"m{i}_name")
+                if name == "":
+                    name = col.text_input("Tên khác:", key=f"m{i}_custom", placeholder="Nhập tên...")
+                mult = col.number_input(
+                    "Bội số", min_value=1.0, max_value=100.0, value=5.0,
+                    step=1.0, key=f"m{i}_mult", format="%.0f"
+                )
+                monsters.append({"name": name or f"Yeu_quai_{i+1}", "multiplier": mult})
+
+        st.subheader("Sư Phụ")
+        c1, c2, _ = st.columns([2, 2, 4])
+        with c1:
+            t_name = c1.selectbox("Tên Sư Phụ", ["Duong_tang"] + KNOWN_TEACHERS, key="t_name")
+        with c2:
+            t_mult = c2.number_input("Bội số", min_value=1.0, max_value=100.0, value=20.0,
+                                     step=1.0, key="t_mult", format="%.0f")
+        teacher = {"name": t_name, "multiplier": t_mult}
+
+    else:  # Upload ảnh
+        uploaded = st.file_uploader("Upload ảnh chụp màn hình:", type=["jpg", "jpeg", "png"])
+        if uploaded:
+            st.image(uploaded, caption="Ảnh đã upload", width="stretch")
+            if st.button("🔍 Phân tích ảnh"):
+                with st.spinner("Đang OCR..."):
+                    try:
+                        from ocr_module import extract_game_info
+                        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                            tmp.write(uploaded.getvalue())
+                            tmp_path = tmp.name
+                        info = extract_game_info(tmp_path, KNOWN_MONSTERS + KNOWN_TEACHERS)
+                        os.unlink(tmp_path)
+                        st.session_state["ocr_result"] = info
+                        st.success(f"OCR xong! Độ tin cậy: {info['confidence']*100:.0f}%")
+                    except ImportError:
+                        st.error("EasyOCR chưa cài. Chạy: `pip install easyocr`")
+                    except Exception as e:
+                        st.error(f"OCR lỗi: {e}")
+
+        if "ocr_result" in st.session_state:
+            info = st.session_state["ocr_result"]
+            st.subheader("Kết quả OCR — chỉnh sửa nếu cần:")
+            new_monsters = []
+            cols = st.columns(4)
+            for i, (col, m) in enumerate(zip(cols, info["monsters"])):
+                with col:
+                    name = col.text_input(f"Yêu quái {i+1}", value=m["name"], key=f"ocr_m{i}_name")
+                    mult = col.number_input("Bội số", value=float(m["multiplier"]),
+                                            min_value=1.0, max_value=100.0, step=1.0,
+                                            key=f"ocr_m{i}_mult", format="%.0f")
+                    new_monsters.append({"name": name, "multiplier": mult})
+            monsters = new_monsters
+            c1, c2 = st.columns(2)
+            t_name = c1.text_input("Sư Phụ", value=info["teacher"]["name"], key="ocr_t_name")
+            t_mult = c2.number_input("Bội số Sư Phụ", value=float(info["teacher"]["multiplier"]),
+                                     min_value=1.0, max_value=100.0, step=1.0,
+                                     key="ocr_t_mult", format="%.0f")
+            teacher = {"name": t_name, "multiplier": t_mult}
+
+    st.divider()
+    if st.button("🔮 Dự đoán ngay!", type="primary", width="stretch"):
+        from config import canonical_name
+        names_norm = [canonical_name(m["name"]) for m in monsters]
+        if not (all(m["name"].strip() for m in monsters) and teacher and teacher["name"].strip()):
+            st.error("Vui lòng điền đầy đủ tên cho tất cả nhân vật!")
+        elif len(set(names_norm)) < 4:
+            st.error("⚠️ 4 yêu quái phải khác nhau — đang có tên bị trùng.")
+        else:
+            with st.spinner("Đang tính toán..."):
+                prediction = pred.predict(monsters, teacher)
+            round_id = db.save_round(monsters, teacher, winner=None, source="web")
+            st.session_state["pred"] = {
+                "prediction": prediction, "monsters": monsters,
+                "teacher": teacher, "round_id": round_id, "recorded": None,
+            }
+            st.session_state["last_round_id"] = round_id
+
+    # Kết quả sống qua mọi rerun (không biến mất khi bấm nút khác)
+    if "pred" in st.session_state:
+        st.divider()
+        render_prediction(st.session_state["pred"])
+
+
+# ─── Tab 2: Nhập kết quả ─────────────────────────────────────
+
+with tab2:
+    st.header("Nhập kết quả trận")
+    st.caption("💡 Cách nhanh nhất: bấm nút người thắng **ngay dưới kết quả ở tab Dự đoán**. "
+               "Tab này để nhập cho các trận cũ còn sót.")
+
+    recent = db.get_recent_rounds(30)
+    pending = [r for r in recent if r["winner"] is None]
+
+    if not pending:
+        st.success("✅ Không có trận nào đang chờ kết quả.")
+    else:
+        opts = {
+            f"#{r['id']} {r['created_at'][:16]} — "
+            f"{r['monster1_name']}, {r['monster2_name']}, {r['monster3_name']}, {r['monster4_name']} | "
+            f"Thầy: {r['teacher_name']}": r
+            for r in pending
+        }
+        selected_label = st.selectbox("Chọn trận:", list(opts.keys()))
+        r = opts[selected_label]
+
+        choices = []
+        for slot in ["monster1", "monster2", "monster3", "monster4"]:
+            choices.append((f"👹 {r[f'{slot}_name']} ({r[f'{slot}_multiplier']:.0f}x)", slot))
+        choices.append((f"👨‍🏫 Thầy thoát ({r['teacher_name']})", "teacher"))
+
+        winner_label = st.radio("Ai đã thắng?", [c[0] for c in choices])
+        winner_slot = next(slot for label, slot in choices if label == winner_label)
+
+        if st.button("✅ Lưu kết quả", type="primary"):
+            db.update_winner(r["id"], winner_slot)
+            st.success(f"Đã lưu trận #{r['id']} → {winner_label} 📈")
+            st.rerun()
+
+
+# ─── Tab 3: Thống kê ─────────────────────────────────────────
+
+with tab3:
+    st.header("Thống kê")
+
+    overall = db.get_overall_stats()
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Tổng trận", overall["total"])
+    c2.metric("Yêu quái thắng", overall["monster_wins"])
+    c3.metric("Thầy thoát", overall["teacher_wins"])
+    c4.metric("Tỷ lệ thầy thoát", f"{overall['teacher_win_rate']:.1f}%")
+
+    if overall["total"] > 0:
+        col_left, col_right = st.columns(2)
+
+        with col_left:
+            fig_pie = go.Figure(data=[go.Pie(
+                labels=["Yêu quái thắng", "Thầy thoát"],
+                values=[overall["monster_wins"], overall["teacher_wins"]],
+                marker_colors=["#FF6B6B", "#4ECDC4"],
+                hole=0.35,
+            )])
+            fig_pie.update_layout(title="Tỷ lệ thắng tổng quát", height=350)
+            st.plotly_chart(fig_pie, width="stretch")
+
+        # Thống kê từng nhân vật
+        all_comp_stats = db.get_all_competitor_stats()
+        non_teacher = [s for s in all_comp_stats if s["name"] != "Duong_tang" and s["appeared"] > 0]
+        teacher_stat = next((s for s in all_comp_stats if s["name"] == "Duong_tang"), None)
+
+        stat_rows = []
+        for s in non_teacher:
+            rate = s["won"] / s["appeared"] * 100
+            stat_rows.append({
+                "Yêu quái": s["name"],
+                "Số lần xuất hiện": s["appeared"],
+                "Số lần thắng": s["won"],
+                "Tỷ lệ thắng (%)": round(rate, 1),
+            })
+        if teacher_stat and teacher_stat["appeared"] > 0:
+            rate = teacher_stat["won"] / teacher_stat["appeared"] * 100
+            stat_rows.append({
+                "Yêu quái": f"👨‍🏫 {teacher_stat['name']}",
+                "Số lần xuất hiện": teacher_stat["appeared"],
+                "Số lần thắng": teacher_stat["won"],
+                "Tỷ lệ thắng (%)": round(rate, 1),
+            })
+
+        stat_df = pd.DataFrame(stat_rows).sort_values("Tỷ lệ thắng (%)", ascending=False)
+
+        with col_right:
+            fig_bar = px.bar(
+                stat_df[stat_df["Yêu quái"].str.startswith("👨‍🏫") == False],
+                x="Yêu quái", y="Tỷ lệ thắng (%)",
+                color="Tỷ lệ thắng (%)",
+                color_continuous_scale="RdYlGn",
+                title="Tỷ lệ thắng từng yêu quái",
+                height=350,
+            )
+            fig_bar.update_xaxes(tickangle=45)
+            st.plotly_chart(fig_bar, width="stretch")
+
+        st.subheader("Chi tiết từng nhân vật")
+        st.dataframe(stat_df, width="stretch", hide_index=True)
+
+        # Odds Calibration — odds có dự đoán đúng không?
+        st.subheader("📐 Phân tích Odds Calibration")
+        st.caption("Kiểm tra xem odds của game có phản ánh đúng xác suất thắng thực tế không")
+
+        calib_data = db.get_odds_calibration_data()
+        if len(calib_data) >= 20:
+            calib_df = pd.DataFrame(calib_data)
+            # Nhóm odds theo bins
+            calib_df["odds_bin"] = pd.cut(
+                calib_df["odds"],
+                bins=[0, 3, 5, 7, 10, 15, 100],
+                labels=["1-3", "3-5", "5-7", "7-10", "10-15", "15+"]
+            )
+            calib_grouped = calib_df.groupby("odds_bin", observed=True).agg(
+                actual_win_rate=("is_winner", "mean"),
+                count=("is_winner", "count"),
+            ).reset_index()
+            calib_grouped["implied_prob_mid"] = [1/2, 1/4, 1/6, 1/8.5, 1/12.5, 1/20]
+
+            fig_calib = go.Figure()
+            fig_calib.add_trace(go.Bar(
+                x=calib_grouped["odds_bin"].astype(str),
+                y=calib_grouped["actual_win_rate"] * 100,
+                name="Tỷ lệ thắng thực tế (%)",
+                marker_color="#4ECDC4",
+            ))
+            fig_calib.add_trace(go.Scatter(
+                x=calib_grouped["odds_bin"].astype(str),
+                y=[p*100 for p in calib_grouped["implied_prob_mid"]],
+                name="Xác suất implied từ odds (%)",
+                mode="lines+markers",
+                line=dict(color="#FF6B6B", dash="dash"),
+            ))
+            fig_calib.update_layout(
+                title="Odds Calibration: Thực tế vs Implied",
+                xaxis_title="Odds range",
+                yaxis_title="%",
+                height=400,
+            )
+            st.plotly_chart(fig_calib, width="stretch")
+            st.caption(
+                "Nếu 2 đường gần nhau → odds phản ánh chính xác xác suất. "
+                "Nếu thanh xanh cao hơn đường đỏ ở vùng odds cao → cơ hội upset nhiều hơn game dự kiến."
+            )
+        else:
+            st.info("Cần ít nhất 20 trận để phân tích odds calibration.")
+
+        # ── Phân tích chiến lược cược (ROI) ──
+        st.divider()
+        st.subheader("💰 Phân tích chiến lược cược (ROI)")
+        import strategy_analysis as sa
+        sa_rounds = sa.load_rounds()
+        if len(sa_rounds) < 15:
+            st.info("Cần ít nhất 15 trận có kết quả để phân tích ROI.")
+        else:
+            st.caption(
+                f"Mô phỏng cược 1 đơn vị/trận trên {len(sa_rounds)} trận. "
+                "ROI > 0 = có lãi. **⚠️ Cảnh báo: dựa trên ít trận thắng → variance rất lớn, "
+                "ROI có thể đảo dấu khi thêm dữ liệu. Đừng coi là chắc chắn.**"
+            )
+
+            # ROI "theo mô hình" (leave-one-out) là phần TỐN KÉM ~chục giây. Để mở
+            # web KHÔNG phải tính lại: kết quả được LƯU RA ĐĨA (model_picks_cache.json)
+            # kèm số trận. Khi mở web, nếu cache còn khớp số trận → LOAD ngay (như
+            # tuned_params). Chỉ khi thêm trận mới (cache lỗi thời) mới cần bấm nút
+            # tính lại 17s — lúc đó kết quả được ghi đè để các lần sau lại chỉ load.
+            model_strats = []
+            n_now = len(sa_rounds)
+            picks = sa.load_model_picks_cache(n_now)
+
+            if picks is None and st.session_state.get("show_model_roi"):
+                # Cache lỗi thời/chưa có và người dùng đã bấm tính → replay rồi lưu.
+                try:
+                    picks = _cached_model_picks(n_now)
+                    sa.save_model_picks_cache(picks, n_now)
+                except Exception as _e:
+                    st.caption(f"⚠️ Không tính được ROI mô hình leave-one-out: {_e}")
+                st.session_state.pop("show_model_roi", None)
+
+            # Slider LUÔN hiện (không biến mất khi data đổi / cache lỗi thời).
+            ev_thr = st.slider(
+                "Ngưỡng EV để lọc trận (cho dòng \"chỉ khi EV ≥ …\")",
+                min_value=1.0, max_value=4.0, value=2.0, step=0.1,
+                help="Mô hình chỉ cược khi con có EV dự đoán cao nhất ≥ ngưỡng này. "
+                     "EV con tốt nhất trong dữ liệu hiện tại nằm khoảng 1.4–5.4 → "
+                     "đặt ~2.0 trở lên mới thực sự lọc bớt trận.",
+            )
+
+            if picks is not None:
+                # Lọc theo ngưỡng EV là tức thì nên kéo slider không lag.
+                model_strats = sa.aggregate_model_strategies(picks, ev_threshold=ev_thr)
+            else:
+                # Cache lỗi thời (vừa thêm trận / đổi tham số) → nút tính lại; slider
+                # vẫn ở trên, bấm xong sẽ áp dụng ngay.
+                st.caption("⏳ Data vừa đổi — cần tính lại ROI mô hình (leave-one-out).")
+                if st.button("▶️ Tính **ROI theo mô hình** (~chục giây, lưu lại cho lần sau)"):
+                    st.session_state["show_model_roi"] = True
+                    st.rerun()
+
+            all_strats = model_strats + sa.compute_strategies(sa_rounds)
+
+            strat_rows = [{
+                "Chiến lược": s["label"],
+                "Số cược": s["bets"],
+                "Thắng": s["wins"],
+                "Tỷ lệ thắng": s["hit_rate"] * 100,
+                "ROI": s["roi"] * 100,
+                "Lãi/lỗ (đơn vị)": s["profit"],
+            } for s in all_strats]
+            st.dataframe(
+                pd.DataFrame(strat_rows), width="stretch", hide_index=True,
+                column_config={
+                    "Tỷ lệ thắng": st.column_config.NumberColumn(format="%.0f%%"),
+                    "ROI": st.column_config.NumberColumn(format="%+.0f%%", help="Lợi nhuận / số tiền cược"),
+                    "Lãi/lỗ (đơn vị)": st.column_config.NumberColumn(format="%+.1f"),
+                },
+            )
+            if model_strats:
+                st.caption(
+                    "2 dòng **\"Theo mô hình\"** tính *leave-one-out* (mỗi trận dự đoán bằng "
+                    f"tất cả trận khác, bỏ đúng trận đó) — KHÔNG bị thổi phồng. Dòng *\"chỉ khi EV ≥ {ev_thr:g}\"* "
+                    "bỏ qua các trận EV thấp — kéo slider lên để xem lọc trận EV cao có cải thiện ROI không."
+                )
+                st.caption(
+                    "ℹ️ *ROI ở đây (leave-one-out) khác với \"ROI/trận (walk-forward)\" ở phần "
+                    "Tinh chỉnh bên dưới — hai thước đo khác nhau, lệch nhau là bình thường.*"
+                )
+
+            with st.expander("📊 Tỷ lệ thắng theo từng giá trị bội (yêu quái)"):
+                ow_rows = [{
+                    "Bội": d["odds"], "Xuất hiện": d["appeared"], "Thắng": d["won"],
+                    "Win%": d["win_rate"] * 100, "Implied%": d["implied"] * 100,
+                    "EV": d["ev"], "ROI": d["roi"] * 100,
+                } for d in sa.compute_odds_winrate(sa_rounds)]
+                st.dataframe(
+                    pd.DataFrame(ow_rows), width="stretch", hide_index=True,
+                    column_config={
+                        "Win%": st.column_config.NumberColumn(format="%.0f%%"),
+                        "Implied%": st.column_config.NumberColumn(format="%.0f%%"),
+                        "EV": st.column_config.NumberColumn(format="%.2f"),
+                        "ROI": st.column_config.NumberColumn(format="%+.0f%%"),
+                    },
+                )
+                st.caption("EV = Win% × Bội. EV > 1 nghĩa là +EV (về lý thuyết có lãi).")
+
+            with st.expander("🏃 Thầy thoát theo từng giá trị bội"):
+                tb_rows = [{
+                    "Bội thầy": d["odds"], "Xuất hiện": d["appeared"], "Thoát": d["escaped"],
+                    "Thoát%": d["escape_rate"] * 100, "Implied%": d["implied"] * 100,
+                    "EV": d["ev"], "ROI": d["roi"] * 100,
+                } for d in sa.compute_teacher_by_odds(sa_rounds)]
+                st.dataframe(
+                    pd.DataFrame(tb_rows), width="stretch", hide_index=True,
+                    column_config={
+                        "Thoát%": st.column_config.NumberColumn(format="%.0f%%"),
+                        "Implied%": st.column_config.NumberColumn(format="%.0f%%"),
+                        "EV": st.column_config.NumberColumn(format="%.2f"),
+                        "ROI": st.column_config.NumberColumn(format="%+.0f%%"),
+                    },
+                )
+                st.caption("Thầy thường thoát ~9-10% thực tế nhưng odds chỉ hàm ý ~4-6% → bị định giá thấp.")
+    else:
+        st.info("Chưa có dữ liệu. Import CSV hoặc nhập trận thủ công.")
+
+    # ── Tinh chỉnh mô hình (chạy tune_shrinkage.py) ──
+    st.divider()
+    st.subheader("⚙️ Tinh chỉnh mô hình")
+    st.caption(
+        "Chạy `tune_shrinkage.py`: quét lại các tham số shrinkage (ind_k, odds_k, "
+        "name_odds_k), chọn bộ có **ROI cao nhất** (EV tối đa khi mỗi trận cược bằng "
+        "nhau vào nhân vật có EV dự đoán cao nhất) và ghi vào `tuned_params.json`. "
+        "Tầng **tên×bội** nằm trong lưới quét — khi đủ mẫu nó sẽ tự được bật. Nên "
+        "chạy lại sau mỗi lần thêm/nhập dữ liệu mới."
+    )
+    st.caption(
+        "📐 *Tinh chỉnh dùng ROI **walk-forward** (mỗi trận chỉ học từ trận trước) — "
+        "đúng chuẩn chọn tham số cho chuỗi thời gian, tránh nhìn lén tương lai. Khác "
+        "với bảng \"Theo mô hình\" phía trên dùng **leave-one-out** để báo cáo chất "
+        "lượng — nên 2 con số ROI có thể lệch nhau, đó là bình thường.*"
+    )
+
+    import json as _json
+    _params_path = os.path.join(os.path.dirname(__file__), "tuned_params.json")
+    try:
+        with open(_params_path, encoding="utf-8") as _f:
+            _cur = _json.load(_f)
+        _meta = _cur.get("_meta", {})
+        pc1, pc2, pc3, pc4 = st.columns(4)
+        pc1.metric("ind_k (theo tên)", _cur.get("INDIVIDUAL_PRIOR_STRENGTH", "—"))
+        pc2.metric("odds_k (theo bội)", _cur.get("ODDS_CALIB_STRENGTH", "—"))
+        pc3.metric(
+            "name_odds_k (tên×bội)", _cur.get("NAME_ODDS_STRENGTH", "—"),
+            help="0 = tầng tên×bội đang TẮT (chưa đủ mẫu). >0 = đã tự bật.",
+        )
+        _roi = _meta.get("roi_ev")
+        pc4.metric(
+            "ROI/trận (walk-forward)",
+            f"{_roi:+.1%}" if isinstance(_roi, (int, float)) else "—",
+            help="Lời/lỗ trung bình mỗi trận khi cược 1 đơn vị vào nhân vật có EV "
+                 "dự đoán cao nhất, tính WALK-FORWARD. Đây là tiêu chí chọn bộ tham "
+                 "số (khác ROI leave-one-out ở bảng phía trên). Lưu ý: rất nhiễu với "
+                 "ít dữ liệu, không đảm bảo tương lai.",
+        )
+        if _meta:
+            _roi_str = f"ROI {_roi:+.4f}/trận · " if isinstance(_roi, (int, float)) else ""
+            st.caption(
+                f"Bộ tham số hiện tại — quét trên {_meta.get('rounds_evaluated','?')} trận · "
+                f"{_roi_str}(tiêu chí chọn: ROI cao nhất)."
+            )
+            st.caption(
+                f"Chỉ số phụ — logloss {_meta.get('logloss','?')} · "
+                f"brier {_meta.get('brier','?')} · "
+                f"top1 {_meta.get('top1','?')}/{_meta.get('rounds_evaluated','?')}."
+            )
+    except (OSError, ValueError):
+        st.info("Chưa có `tuned_params.json` — bấm nút dưới để tạo lần đầu (đang dùng giá trị mặc định).")
+
+    if st.button("▶️ Chạy tinh chỉnh ngay", type="primary"):
+        import subprocess, sys, importlib
+        from tune_shrinkage import TOTAL_COMBOS
+
+        progress = st.progress(0.0, text=f"Bắt đầu quét 0/{TOTAL_COMBOS} tổ hợp...")
+        log_box = st.empty()
+        env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+        proc = subprocess.Popen(
+            [sys.executable, "-u", "tune_shrinkage.py"],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", bufsize=1, env=env,
+        )
+        lines, done = [], 0
+        for line in proc.stdout:
+            line = line.rstrip("\n")
+            lines.append(line)
+            tok = line.strip().split()
+            # Mỗi dòng dữ liệu (1 tổ hợp) bắt đầu bằng số (cột indK).
+            if tok and tok[0].lstrip("-").isdigit():
+                done += 1
+                progress.progress(
+                    min(done / TOTAL_COMBOS, 1.0),
+                    text=f"Đã quét {done}/{TOTAL_COMBOS} tổ hợp...",
+                )
+            log_box.code("\n".join(lines[-14:]), language="text")
+        proc.wait()
+        progress.empty()
+
+        reloaded = False
+        if proc.returncode == 0:
+            try:  # Nạp lại tham số mới cho phiên đang chạy (best-effort).
+                import config as _cfg
+                importlib.reload(_cfg)
+                importlib.reload(pred)
+                reloaded = True
+            except Exception:
+                reloaded = False
+        st.session_state["tune_result"] = {
+            "ok": proc.returncode == 0,
+            "code": proc.returncode,
+            "stdout": "\n".join(lines),
+            "stderr": "",
+            "reloaded": reloaded,
+        }
+        st.rerun()
+
+    # Hiển thị kết quả lần tinh chỉnh gần nhất (giữ qua rerun để đọc được output).
+    _tr = st.session_state.get("tune_result")
+    if _tr:
+        if _tr["ok"]:
+            st.success("✅ Tinh chỉnh xong! `tuned_params.json` đã cập nhật (xem chỉ số phía trên).")
+            st.caption(
+                "Đã nạp tham số mới vào phiên hiện tại — dự đoán kế tiếp dùng ngay."
+                if _tr["reloaded"]
+                else "Đã ghi tham số mới. Khởi động lại app để áp dụng hoàn toàn."
+            )
+            with st.expander("Xem chi tiết bảng quét"):
+                st.code(_tr["stdout"] or "(không có output)", language="text")
+        else:
+            st.error(f"❌ Tinh chỉnh lỗi (exit {_tr['code']}).")
+            if _tr["stdout"]:
+                st.code(_tr["stdout"], language="text")
+            if _tr["stderr"]:
+                st.code(_tr["stderr"], language="text")
+        if st.button("Ẩn kết quả", key="hide_tune_result"):
+            st.session_state.pop("tune_result", None)
+            st.rerun()
+
+
+# ─── Tab 4: Lịch sử ──────────────────────────────────────────
+
+with tab4:
+    st.header("Lịch sử trận đấu")
+
+    all_rounds = db.get_recent_rounds(200)
+    if not all_rounds:
+        st.info("Chưa có dữ liệu.")
+    else:
+        df_rows = []
+        for r in all_rounds:
+            if r["winner"] == "teacher":
+                winner_label = f"👨‍🏫 Thầy ({r['teacher_name']})"
+            elif r["winner"]:
+                slot = r["winner"]
+                winner_label = f"👹 {r[f'{slot}_name']}"
+            else:
+                winner_label = "⏳ Chờ"
+            df_rows.append({
+                "ID": r["id"],
+                "Thời gian": r["created_at"][:16],
+                "YQ1": f"{r['monster1_name']} ({r['monster1_multiplier']:.0f}x)",
+                "YQ2": f"{r['monster2_name']} ({r['monster2_multiplier']:.0f}x)",
+                "YQ3": f"{r['monster3_name']} ({r['monster3_multiplier']:.0f}x)",
+                "YQ4": f"{r['monster4_name']} ({r['monster4_multiplier']:.0f}x)",
+                "Sư Phụ": f"{r['teacher_name']} ({r['teacher_multiplier']:.0f}x)",
+                "Kết quả": winner_label,
+                "Nguồn": r["source"],
+            })
+        st.dataframe(pd.DataFrame(df_rows), width="stretch", hide_index=True)
+
+
+# ─── Tab 5: Import CSV ───────────────────────────────────────
+
+with tab5:
+    st.header("Import dữ liệu CSV")
+    st.caption("Format: `Round_id, Competitor, Odds, Is_winner`")
+
+    uploaded_csv = st.file_uploader("Chọn file CSV:", type=["csv"])
+
+    col1, col2 = st.columns(2)
+    with col1:
+        clear_before_import = st.checkbox("⚠️ Xóa database cũ trước khi import", value=False)
+    with col2:
+        skip_existing = st.checkbox("Bỏ qua trận đã import rồi", value=True)
+
+    if uploaded_csv and st.button("📥 Import", type="primary"):
+        with st.spinner("Đang import..."):
+            import csv as csv_mod
+            import sqlite3
+            from config import DATABASE_PATH
+            from import_csv import parse_rounds, import_rounds, TEACHER_NAME
+
+            # Lưu file tạm
+            with tempfile.NamedTemporaryFile(mode="wb", suffix=".csv", delete=False) as tmp:
+                tmp.write(uploaded_csv.getvalue())
+                tmp_path = tmp.name
+
+            if clear_before_import:
+                with sqlite3.connect(DATABASE_PATH) as conn:
+                    conn.execute("DELETE FROM rounds")
+                    conn.commit()
+
+            rounds = parse_rounds(tmp_path)
+            os.unlink(tmp_path)
+
+            imported, skipped = import_rounds(rounds, skip_existing=skip_existing, verbose=False)
+
+        st.success(f"✅ Import xong: **{imported}** trận mới, bỏ qua {skipped} trận trùng.")
+        st.rerun()
+
+    # Preview format
+    with st.expander("Xem format CSV mẫu"):
+        st.code("""Round_id,Competitor,Odds,Is_winner
+62,Mac_lan,12,0
+62,Hoang_mi_vuong,5,0
+62,Dai_bang_kim_si,4,0
+62,Thien_thu_yeu_co,9,0
+62,Duong_tang,20,1
+61,Hong_hai_nhi,3,0
+61,Bach_cot_tinh,9,1
+...""")
+        st.caption("Mỗi trận gồm 5 dòng: 4 yêu quái + Duong_tang. Is_winner=1 là người thắng.")
+
+    # Cập nhật danh sách known_monsters từ DB
+    st.divider()
+    st.subheader("Danh sách yêu quái đã biết (từ DB)")
+    all_stats = db.get_all_competitor_stats()
+    known_from_db = [s["name"] for s in all_stats if s["name"] != "Duong_tang"]
+    if known_from_db:
+        st.write(", ".join(sorted(known_from_db)))
+    else:
+        st.info("Chưa có dữ liệu trong database.")

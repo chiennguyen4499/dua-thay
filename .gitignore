@@ -1,0 +1,21 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# Local data (database, backups, WAL files)
+data/
+
+# Screenshots (game images, may contain personal data)
+screenshots/
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# OS
+Thumbs.db

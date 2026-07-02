@@ -1,0 +1,13 @@
+{
+  "INDIVIDUAL_PRIOR_STRENGTH": 40,
+  "ODDS_CALIB_STRENGTH": 2,
+  "NAME_ODDS_STRENGTH": 10,
+  "_meta": {
+    "rounds_evaluated": 147,
+    "roi_ev": 0.7687,
+    "logloss": 1.4647,
+    "brier": 0.7384,
+    "top1": 51,
+    "optimized_by": "roi_ev"
+  }
+}
