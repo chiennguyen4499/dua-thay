@@ -8,30 +8,39 @@
 ## 1. Tổng quan kiến trúc
 
 ```
-                         ┌──────────────┐
-   Ảnh / Nhập tay  ───►  │ ocr_module   │ (EasyOCR, tùy chọn)
-                         └──────┬───────┘
-                                ▼
-  Telegram bot  ─┐      ┌──────────────┐      ┌──────────────┐
-                 ├────► │  predictor   │ ───► │   Kết quả     │
-  Web UI (Streamlit) ─┘ │ (3 tầng blend)│     │ %, EV, gợi ý  │
-                        └──────┬───────┘      └──────────────┘
-                               ▼
-                        ┌──────────────┐
-                        │  database    │ SQLite: data/rounds.db
-                        │ (bảng rounds)│
-                        └──────────────┘
+  Telegram bot (PC, python main.py --bot)      Web UI (Streamlit Community Cloud)
+         │                                              │
+         │            ┌──────────────┐                  │
+         ├──────────► │  predictor   │ ◄────────────────┤
+         │            │ (3 tầng blend)│                  │
+         │            └──────┬───────┘                  │
+         │                   ▼                          │
+         │            ┌──────────────┐                  │
+         └──────────► │  database.py │ ◄────────────────┘
+                       │ get_conn():  │
+                       │ local hay    │
+                       │ remote?      │
+                       └──────┬───────┘
+                    ┌─────────┴─────────┐
+                    ▼                   ▼
+           SQLite local             Turso (libSQL)
+           data/rounds.db           — nguồn dữ liệu SỐNG dùng
+           (dev/backtest/           chung giữa bot (PC) và
+            tune/rollback)          Web UI (Cloud)
 ```
 
-Tất cả module dùng chung `database.py` và `predictor.py`. `main.py` chạy bot
-(daemon thread) + Web UI (main thread) đồng thời.
+Bot chạy trên PC (`python main.py` hoặc `--bot`), Web UI chạy **độc lập** trên
+Streamlit Community Cloud (`web_app.py`, tự redeploy khi push code). Cả hai
+cùng đọc/ghi **Turso** — không còn chung 1 process/máy như trước. Tất cả module
+vẫn dùng chung `database.py` và `predictor.py`; `database.py.get_conn()` tự
+quyết định local hay remote (xem mục 3 và 9).
 
 ## 2. Danh sách file
 
 | File | Vai trò |
 |------|---------|
-| [config.py](config.py) | Cấu hình, đọc `.env`; `KNOWN_MONSTERS` (18), `KNOWN_TEACHERS`, `TEACHER_DEFAULT="Duong_tang"`, `MIN_SAMPLES_FOR_PATTERN=3`. **`DATABASE_PATH` neo theo `__file__`** (thư mục dự án), không theo CWD → chạy/di chuyển thư mục từ đâu cũng đúng DB |
-| [database.py](database.py) | SQLite: schema, lưu/đọc trận, thống kê, pattern key |
+| [config.py](config.py) | Cấu hình, đọc `.env`; `KNOWN_MONSTERS` (18), `KNOWN_TEACHERS`, `TEACHER_DEFAULT="Duong_tang"`, `MIN_SAMPLES_FOR_PATTERN=3`. **`DATABASE_PATH` neo theo `__file__`** (thư mục dự án), không theo CWD → chạy/di chuyển thư mục từ đâu cũng đúng DB. `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN` (để trống = chỉ dùng SQLite local) |
+| [database.py](database.py) | Schema, lưu/đọc trận, thống kê, pattern key. `get_conn()` tự chọn SQLite local hay Turso (remote) — xem mục 3 và 9 |
 | [predictor.py](predictor.py) | Thuật toán dự đoán 3 tầng + format text Telegram |
 | [ocr_module.py](ocr_module.py) | EasyOCR đọc ảnh → (tên, bội số); fuzzy match với known names |
 | [telegram_bot.py](telegram_bot.py) | Bot: luồng ảnh, nhập tay, `/result`, `/stats` |
@@ -41,8 +50,8 @@ Tất cả module dùng chung `database.py` và `predictor.py`. `main.py` chạy
 | [tune_shrinkage.py](tune_shrinkage.py) | Quét tham số K (ODDS_CALIB / NAME_ODDS / INDIVIDUAL) theo **ROI walk-forward (EV tối đa)** để retune khi có thêm dữ liệu; ghi `tuned_params.json` kèm `optimized_by="roi_ev"` |
 | [strategy_analysis.py](strategy_analysis.py) | Kiểm chứng heuristic cược (bội to/nhỏ, thầy bội cao) + ROI từng chiến lược; **ROI "theo mô hình" tính leave-one-out** (`compute_model_picks` + `aggregate_model_strategies`) |
 | [main.py](main.py) | Entry point chạy bot + web |
-| `.env` / [.env.example](.env.example) | Token & cấu hình |
-| `data/rounds.db` | Database SQLite (tự tạo) |
+| `.env` / [.env.example](.env.example) | Token & cấu hình (Telegram, Turso) |
+| `data/rounds.db` | Database SQLite local — dev/backtest/tune/rollback. **Kể từ khi có Turso, không còn là nguồn dữ liệu sống chính** (xem mục 9) |
 | [requirements.txt](requirements.txt) | Dependencies |
 
 ## 3. Mô hình dữ liệu
@@ -66,7 +75,8 @@ notes                 TEXT          -- vd 'original_id:62' để chống import 
 - `winner` lưu **slot** (`monster1`...), không lưu tên — vì cùng tên có thể ở slot khác nhau giữa các trận.
 - Mọi query thống kê đều có `WHERE winner IS NOT NULL` → trận chưa có kết quả **không** ảnh hưởng thống kê/dự đoán. Bỏ ngang an toàn.
 - **Chuẩn hóa tên**: `save_round` và `predict` đều gọi `config.canonical_name()` → mọi nguồn (web/telegram tay/OCR/CSV) quy về cùng tên canonical, tránh phân mảnh ("Bach nhan quan" = "bach_nhan_quan" = `Bach_nhan_quan`).
-- **Đồng thời**: `get_conn` bật `PRAGMA journal_mode=WAL` + `busy_timeout=5000` để bot (thread) và web (process riêng) không bị "database is locked".
+- **Đồng thời (local)**: khi dùng SQLite local, `get_conn` bật `PRAGMA journal_mode=WAL` + `busy_timeout=5000` để bot (thread) và web (process riêng) không bị "database is locked".
+- **Đồng thời (remote)**: khi đã cấu hình Turso, bot (PC) và Web UI (Streamlit Cloud) là 2 tiến trình/máy hoàn toàn khác nhau, đọc/ghi cùng 1 database Turso — Turso tự lo concurrency phía server, không cần WAL/busy_timeout (2 PRAGMA này chỉ chạy ở nhánh local).
 
 ### Pattern key ([database.py:45](database.py#L45))
 ```python
@@ -156,12 +166,17 @@ Khi DB < 10 trận: dùng thẳng `q` (xác suất implied từ bội số).
 
 ```powershell
 pip install -r requirements.txt          # lần đầu (easyocr tùy chọn, nặng)
-python import_csv.py Duathay.csv          # nạp lịch sử (1 lần)
-python main.py                            # bot + web
+python import_csv.py Duathay.csv          # nạp lịch sử (1 lần, chỉ cần khi chưa có data)
+python main.py                            # bot + web (local, dùng Turso nếu .env có cấu hình)
 python main.py --web                      # chỉ web (http://localhost:8501)
-python main.py --bot                      # chỉ bot
+python main.py --bot                      # chỉ bot (chạy trên PC, LUÔN chạy kiểu này kể cả sau khi có Web Cloud)
 ```
 Dừng tiến trình trong terminal: **Ctrl+C**.
+
+**Web UI trên Streamlit Community Cloud** (cập nhật khi push code):
+- Deploy lần đầu: share.streamlit.io → New app → chọn repo `chiennguyen4499/dua-thay` → **Main file path = `web_app.py`** → nhập secrets (`TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`) ở Settings → Secrets.
+- Cập nhật sau này: chỉ cần `git push` lên `main` — Streamlit Cloud tự redeploy.
+- Bot Telegram **không** deploy lên Cloud, luôn chạy trên PC (`python main.py` hoặc `--bot`).
 
 ## 9. Quyết định thiết kế & các lỗi đã xử lý (lessons learned)
 
@@ -174,10 +189,18 @@ Dừng tiến trình trong terminal: **Ctrl+C**.
 - **Replay DB tạm rò vào DB thật**: các hàm replay (`compute_model_picks`, `tune_shrinkage`, `backtest`) tạm gán `db.DATABASE_PATH = tmp` toàn cục rồi `save_round` vào DB tạm. Vì web + bot daemon **dùng chung module `database`**, biến toàn cục này là điểm tranh chấp → từng làm 99 trận `source='sa'` lọt vào DB thật. Cách phòng (đã áp dụng trong `compute_model_picks`): source tag tạm DUY NHẤT (`_REPLAY_SOURCE`), `threading.Lock`, và `finally` luôn `DELETE FROM rounds WHERE source=<tag>` trên DB thật làm lưới an toàn.
 - **DATABASE_PATH theo CWD là footgun**: bản cũ `data/rounds.db` tương đối theo thư mục chạy → chạy nhầm chỗ / di chuyển thư mục sẽ tạo DB rỗng mới ("mất hết data"). Đã sửa: neo theo `os.path.dirname(__file__)` ([config.py](config.py)), path tuyệt đối trong `.env` vẫn được tôn trọng.
 - **ROI mô hình = leave-one-out, KHÔNG in-sample**: dự đoán mỗi trận bằng tất cả trận khác (bỏ đúng trận đó). In-sample (gồm cả chính nó) bị lookahead → ROI thổi phồng (đo thực: +225% in-sample vs +52% LOO vs +77% walk-forward). LOO không thổi phồng, phản ánh chất lượng mô hình với lượng data hiện tại.
+- **Web UI lên Streamlit Cloud + database dùng chung online (2026-07)**: bot Telegram tiếp tục chạy trên PC, Web UI chuyển sang Streamlit Community Cloud (không có ổ đĩa bền) để dùng được từ điện thoại và vẫn ghi được kết quả từ xa. Chọn **Turso (libSQL)** thay vì Supabase/Postgres vì cùng cú pháp SQLite (không phải viết lại câu SQL), và free tier không tự "ngủ"/pause sau vài ngày không dùng (Supabase free tier pause sau 7 ngày — rủi ro thật với app ít traffic).
+  - `database.py.get_conn()` phân nhánh: nếu `DATABASE_PATH` **chưa bị đổi** so với lúc import module (`_CONFIGURED_DB_PATH`) và đã cấu hình `TURSO_DATABASE_URL` → nối Turso; ngược lại dùng SQLite local như cũ.
+  - Lý do phải phân nhánh (không nối Turso vô điều kiện): `backtest.py`, `tune_shrinkage.py`, `strategy_analysis.compute_model_picks()` đều tạm gán `db.DATABASE_PATH = tempfile.mktemp()` để chạy replay hàng trăm lần **local cho nhanh** rồi trả lại path gốc — 3 file này không cần sửa gì, `get_conn()` tự nhận ra path đã bị tráo tạm và luôn dùng local trong lúc đó.
+  - **Bug phát hiện khi test**: `tune_shrinkage.py` gọi `db.get_all_rounds_with_winner()` (đọc lịch sử thật) **trước khi** tráo path tạm, và làm vậy **80 lần** (1 lần/tổ hợp tham số trong lưới quét) — trước khi có Turso, đây là đọc file local rẻ nên không sao, nhưng sau khi có Turso mỗi lần là 1 round-trip mạng → chậm và từng crash vì lỗi mạng thoáng qua (DNS timeout). Đã sửa: lấy lịch sử thật **1 lần duy nhất** trước vòng lặp, truyền vào `eval_combo()` thay vì để hàm tự đọc lại mỗi lần.
+  - Response từ Turso client (`libsql`) trả tuple thô (không có tên cột như `sqlite3.Row`) → `database.py` có lớp bọc `_RemoteRow`/`_RemoteCursor`/`_RemoteConn` dựa vào `cursor.description` để tái tạo cách truy cập `row["ten_cot"]` mà 18 hàm sẵn có đang dùng — nhờ vậy không phải sửa SQL nào trong các hàm đó.
+  - Đã migrate 175 trận từ `data/rounds.db` sang Turso, giữ nguyên `id`/`created_at`; verify khớp 100% cả về `COUNT`/`SUM(id)` lẫn kết quả các hàm thống kê phức tạp (`get_all_competitor_stats`, `get_monster_odds_winrate`,...). File `data/rounds.db` **giữ nguyên, không xóa** — là lưới an toàn rollback (bỏ `TURSO_DATABASE_URL` trong `.env` là quay lại dùng local ngay, không cần sửa code).
 
 ## 10. Việc còn lại / hướng mở rộng
 
 - Đặt `ALLOWED_CHAT_ID` trong `.env` (lấy từ @userinfobot).
 - Revoke + thay token Telegram (token cũ từng lộ trong log) qua @BotFather.
 - Test OCR với ảnh game thật; heuristic tách thầy trong `extract_game_info` còn đơn giản (lấy pair thứ 5) — có thể cần tinh chỉnh theo layout thật.
-- Tích lũy thêm dữ liệu để pattern tier kích hoạt nhiều hơn (hiện chủ yếu chạy tier "individual"; ~157 trận tính đến 2026-06).
+- Tích lũy thêm dữ liệu để pattern tier kích hoạt nhiều hơn (hiện chủ yếu chạy tier "individual"; 175 trận tính đến 2026-07).
+- Kiểm tra `easyocr` (kéo theo `torch`, khá nặng) có build được trên Streamlit Community Cloud free tier không — nếu không, cân nhắc tắt tính năng upload ảnh OCR trên bản Cloud (chỉ giữ nhập tay), vẫn dùng OCR bình thường qua bot Telegram trên PC.
+- Theo dõi hạn mức free tier Turso (hiện dùng không đáng kể so với hạn mức) và tình trạng project Streamlit Cloud có bị "ngủ" sau 12h không truy cập hay không.

@@ -18,8 +18,8 @@ Mục tiêu của hệ thống: **dự đoán nhân vật nào có khả năng t
 
 ## 2. Người dùng
 
-- Một người dùng duy nhất (chủ sở hữu), chơi trên điện thoại, chạy hệ thống **local trên PC Windows**.
-- Không cần multi-user, không cần deploy cloud, không cần auth phức tạp (chỉ giới hạn theo Telegram Chat ID là đủ).
+- Một người dùng duy nhất (chủ sở hữu), chơi trên điện thoại. Bot Telegram chạy **local trên PC Windows**; Web UI chạy **online (Streamlit Community Cloud)** nên mở được từ điện thoại/bất kỳ đâu, kể cả khi PC tắt — và vẫn nhập/ghi được kết quả trận từ xa (không chỉ xem).
+- Không cần multi-user, không cần auth phức tạp (chỉ giới hạn theo Telegram Chat ID là đủ).
 
 ## 3. Yêu cầu chức năng
 
@@ -60,10 +60,10 @@ Với mỗi trận, hệ thống trả về:
 
 ## 4. Yêu cầu phi chức năng
 
-- **Nền tảng**: Windows 11, Python 3.12, terminal PowerShell (cp1252 — **không in emoji trong `print()`**, dùng ASCII).
-- **Lưu trữ**: SQLite local (`data/rounds.db`), không cần DB server.
-- **Chạy đồng thời**: Telegram bot + Web UI trong cùng tiến trình (`python main.py`).
-- **Bảo mật**: token Telegram để trong `.env` (không commit). Có thể giới hạn `ALLOWED_CHAT_ID`.
+- **Nền tảng**: bot Telegram chạy trên Windows 11, Python 3.12, terminal PowerShell (cp1252 — **không in emoji trong `print()`**, dùng ASCII). Web UI chạy trên Streamlit Community Cloud (Linux, tự redeploy khi push code).
+- **Lưu trữ**: database online dùng chung (Turso/libSQL) là nguồn dữ liệu sống, để bot (PC) và Web UI (Cloud) luôn thấy cùng dữ liệu. SQLite local (`data/rounds.db`) vẫn giữ lại làm fallback khi chưa cấu hình Turso, cho backtest/tune tham số (chạy nhanh, không qua mạng), và làm lưới an toàn rollback.
+- **Chạy đồng thời**: Telegram bot chạy trên PC (`python main.py` hoặc `--bot`); Web UI chạy như một deployment **riêng biệt** trên Streamlit Cloud, không cùng tiến trình/máy với bot nữa — đồng bộ qua database dùng chung.
+- **Bảo mật**: token Telegram để trong `.env` (không commit). Turso URL/token để trong `.env` (local) và Streamlit Cloud Secrets (Web). Có thể giới hạn `ALLOWED_CHAT_ID`.
 - **Tiếng Việt**: toàn bộ UI và OCR hỗ trợ tiếng Việt. Tên nhân vật lưu dạng không dấu, gạch dưới (vd `Bach_nhan_quan`).
 
 ## 5. Ràng buộc dữ liệu
@@ -76,13 +76,14 @@ Với mỗi trận, hệ thống trả về:
 
 - Không tự động đặt cược / không thao tác tiền thật.
 - Không dự đoán thời gian thực trong khi trận đang chạy.
-- Không multi-user / không cloud / không mobile app riêng.
+- Không multi-user / không mobile app riêng.
 - Không đảm bảo thắng — đây là công cụ hỗ trợ thống kê, kết quả game có yếu tố ngẫu nhiên.
 
-## 7. Trạng thái hiện tại (tính đến 2026-06-12)
+## 7. Trạng thái hiện tại (tính đến 2026-07-02)
 
 - ✅ Database, predictor, Telegram bot, Web UI, import CSV: hoạt động.
-- ✅ Đã import 63 trận. Một số thống kê: `Bach_nhan_quan` ~56% thắng, `Thanh_nguu` ~53%, thầy `Duong_tang` chỉ ~9.5%.
+- ✅ 175 trận trong database (đã migrate sang Turso, giữ nguyên id/created_at, verify khớp 100%).
+- ✅ Web UI deploy lên Streamlit Community Cloud, dùng chung database Turso với bot Telegram trên PC — ghi/đọc từ xa hoạt động đúng (test: ghi kết quả qua Web Cloud, đọc thấy ngay từ script khác dùng cùng database).
 - ⏳ Cần đặt `ALLOWED_CHAT_ID` trong `.env` (lấy từ @userinfobot).
 - ⏳ Token Telegram từng bị lộ trong log → nên revoke qua @BotFather và thay token mới.
-- ⏳ OCR (EasyOCR) chưa test với ảnh game thật (cần `pip install easyocr`).
+- ⏳ OCR (EasyOCR) chưa test với ảnh game thật; chưa xác nhận `easyocr`/`torch` build được trên Streamlit Community Cloud free tier (nếu không, chỉ dùng OCR qua bot Telegram trên PC).
