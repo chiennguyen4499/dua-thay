@@ -264,18 +264,24 @@ def render_prediction(state):
         st.rerun()
 
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+# `st.tabs` chạy code của CẢ 5 tab trên mọi rerun (kể cả tab không hiển thị,
+# chỉ ẩn bằng CSS) — dù cache đã giảm số round-trip Turso, code CPU + logic
+# của tab khác vẫn chạy thừa mỗi lần. Dùng `st.radio` (server biết đang chọn
+# gì) + if/elif để CHỈ chạy code của tab đang xem — tương tác ở tab nào chỉ
+# tác động tab đó.
+TAB_LABELS = [
     "🔮 Dự đoán",
     "📝 Nhập kết quả",
     "📊 Thống kê",
     "📋 Lịch sử",
     "📂 Import CSV",
-])
+]
+active_tab = st.radio("Chọn mục:", TAB_LABELS, horizontal=True, label_visibility="collapsed")
 
 
 # ─── Tab 1: Dự đoán ──────────────────────────────────────────
 
-with tab1:
+if active_tab == TAB_LABELS[0]:
     st.header("Dự đoán trận mới")
 
     with st.expander("📌 Ghi nhớ: heuristic thủ công tốt nhất (lọc từ ~120 chiến lược)"):
@@ -414,7 +420,7 @@ with tab1:
 
 # ─── Tab 2: Nhập kết quả ─────────────────────────────────────
 
-with tab2:
+elif active_tab == TAB_LABELS[1]:
     st.header("Nhập kết quả trận")
     st.caption("💡 Cách nhanh nhất: bấm nút người thắng **ngay dưới kết quả ở tab Dự đoán**. "
                "Tab này để nhập cho các trận cũ còn sót.")
@@ -451,7 +457,7 @@ with tab2:
 
 # ─── Tab 3: Thống kê ─────────────────────────────────────────
 
-with tab3:
+elif active_tab == TAB_LABELS[2]:
     st.header("Thống kê")
 
     overall = _cached_overall_stats()
@@ -803,7 +809,7 @@ with tab3:
 
 # ─── Tab 4: Lịch sử ──────────────────────────────────────────
 
-with tab4:
+elif active_tab == TAB_LABELS[3]:
     st.header("Lịch sử trận đấu")
 
     all_rounds = _cached_recent_rounds(200)
@@ -835,7 +841,7 @@ with tab4:
 
 # ─── Tab 5: Import CSV ───────────────────────────────────────
 
-with tab5:
+elif active_tab == TAB_LABELS[4]:
     st.header("Import dữ liệu CSV")
     st.caption("Format: `Round_id, Competitor, Odds, Is_winner`")
 
