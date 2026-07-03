@@ -27,7 +27,11 @@ import database as db
 import predictor as pred
 from config import KNOWN_MONSTERS, KNOWN_TEACHERS
 
-db.init_db()
+@st.cache_resource
+def _init_db_once():
+    db.init_db()
+
+_init_db_once()
 
 
 @st.cache_data(show_spinner="Đang tính ROI mô hình (leave-one-out, ~chục giây)...")
@@ -274,8 +278,6 @@ with tab1:
             with col:
                 name_opts = [""] + all_known
                 name = col.selectbox(f"Yêu quái {i+1}", options=name_opts, key=f"m{i}_name")
-                if name == "":
-                    name = col.text_input("Tên khác:", key=f"m{i}_custom", placeholder="Nhập tên...")
                 mult = col.number_input(
                     "Bội số", min_value=1.0, max_value=100.0, value=5.0,
                     step=1.0, key=f"m{i}_mult", format="%.0f"
