@@ -10,10 +10,10 @@ Blend tự động theo lượng data: càng nhiều data → càng tin lịch s
 """
 
 from database import (
-    get_rounds_by_pattern, get_monster_stats, get_teacher_stats,
+    get_rounds_by_pattern, get_monster_stats_batch, get_teacher_stats,
     get_total_rounds_with_winner, make_pattern_key,
     get_monster_odds_winrate, get_teacher_odds_winrate,
-    get_monster_name_odds_stats, get_teacher_name_odds_stats,
+    get_monster_name_odds_stats_batch, get_teacher_name_odds_stats,
 )
 from config import (
     MIN_SAMPLES_FOR_PATTERN, INDIVIDUAL_PRIOR_STRENGTH,
@@ -39,14 +39,13 @@ def _winner_name_from_round(r: dict) -> str:
 
 
 def _hist_stats_for_chars(all_chars: list[dict], is_teacher_fn) -> dict[str, dict]:
-    """Lấy stats lịch sử cho mỗi nhân vật."""
-    result = {}
+    """Lấy stats lịch sử cho mỗi nhân vật — 1 query gộp cho tất cả yêu quái
+    (thay vì 1 query/con) + 1 query cho thầy, tránh N+1 round-trip Turso."""
+    monster_names = [c["name"] for c in all_chars if not is_teacher_fn(c)]
+    result = get_monster_stats_batch(monster_names)
     for c in all_chars:
         if is_teacher_fn(c):
-            s = get_teacher_stats(c["name"])
-        else:
-            s = get_monster_stats(c["name"])
-        result[c["name"]] = s
+            result[c["name"]] = get_teacher_stats(c["name"])
     return result
 
 
@@ -139,9 +138,10 @@ def _from_pattern(all_chars, pattern_rounds, q, is_teacher_fn) -> tuple[dict, di
     total = sum(probs.values())
     probs = {k: v / total for k, v in probs.items()}
 
+    monster_stats = get_monster_stats_batch([c["name"] for c in all_chars if not is_teacher_fn(c)])
     details = {}
     for c in all_chars:
-        s = get_monster_stats(c["name"]) if not is_teacher_fn(c) else get_teacher_stats(c["name"])
+        s = get_teacher_stats(c["name"]) if is_teacher_fn(c) else monster_stats[c["name"]]
         details[c["name"]] = {
             "appeared": s["appeared"], "won": s["won"],
             "pattern_appeared": n,
@@ -184,6 +184,11 @@ def _from_individual(all_chars, stats, q, is_teacher_fn, odds_map) -> tuple[dict
     monster_odds_tbl = get_monster_odds_winrate()
     teacher_odds_tbl = get_teacher_odds_winrate()
 
+    # Tầng 3 (tên × bội): 1 query gộp cho tất cả yêu quái thay vì 1 query/con.
+    monster_name_odds = get_monster_name_odds_stats_batch(
+        [c["name"] for c in all_chars if not is_teacher_fn(c)]
+    )
+
     est = {}
     details = {}
     for c in all_chars:
@@ -204,7 +209,7 @@ def _from_individual(all_chars, stats, q, is_teacher_fn, odds_map) -> tuple[dict
         if is_t:
             no = get_teacher_name_odds_stats(name, o)
         else:
-            no = get_monster_name_odds_stats(name, o)
+            no = monster_name_odds.get((name, o), {"appeared": 0, "won": 0})
         p_final = _shrink(no["won"], no["appeared"], p_name, NAME_ODDS_STRENGTH)
 
         est[name] = p_final

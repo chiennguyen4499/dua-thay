@@ -208,41 +208,50 @@ def get_all_rounds_with_winner() -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def get_monster_stats(monster_name: str) -> dict:
-    """Thống kê tổng hợp cho 1 yêu quái: số lần xuất hiện, số lần thắng."""
+def get_monster_stats_batch(names: list[str]) -> dict[str, dict]:
+    """Thống kê xuất hiện/thắng cho NHIỀU yêu quái trong 1 query (thay vì 1
+    query/con) — tránh N+1 round-trip khi gọi Turso ở predictor.predict()."""
+    if not names:
+        return {}
+    placeholders = ",".join("?" * len(names))
     with get_conn() as conn:
-        # Đếm số trận xuất hiện (trong bất kỳ slot nào)
-        appeared = conn.execute("""
-            SELECT COUNT(*) as cnt FROM rounds
-            WHERE winner IS NOT NULL
-              AND (monster1_name=? OR monster2_name=? OR monster3_name=? OR monster4_name=?)
-        """, (monster_name,)*4).fetchone()["cnt"]
-
-        # Đếm số lần thắng (winner = monster_name trong bất kỳ slot tương ứng)
-        won = conn.execute("""
-            SELECT COUNT(*) as cnt FROM rounds
-            WHERE winner IS NOT NULL AND (
-                (winner='monster1' AND monster1_name=?) OR
-                (winner='monster2' AND monster2_name=?) OR
-                (winner='monster3' AND monster3_name=?) OR
-                (winner='monster4' AND monster4_name=?)
-            )
-        """, (monster_name,)*4).fetchone()["cnt"]
-
-    return {"name": monster_name, "appeared": appeared, "won": won}
+        rows = conn.execute(f"""
+            SELECT name, SUM(appeared) as appeared, SUM(won) as won FROM (
+                SELECT monster1_name as name, COUNT(*) as appeared,
+                       SUM(CASE WHEN winner='monster1' THEN 1 ELSE 0 END) as won
+                FROM rounds WHERE winner IS NOT NULL AND monster1_name IN ({placeholders})
+                GROUP BY monster1_name
+                UNION ALL
+                SELECT monster2_name, COUNT(*),
+                       SUM(CASE WHEN winner='monster2' THEN 1 ELSE 0 END)
+                FROM rounds WHERE winner IS NOT NULL AND monster2_name IN ({placeholders})
+                GROUP BY monster2_name
+                UNION ALL
+                SELECT monster3_name, COUNT(*),
+                       SUM(CASE WHEN winner='monster3' THEN 1 ELSE 0 END)
+                FROM rounds WHERE winner IS NOT NULL AND monster3_name IN ({placeholders})
+                GROUP BY monster3_name
+                UNION ALL
+                SELECT monster4_name, COUNT(*),
+                       SUM(CASE WHEN winner='monster4' THEN 1 ELSE 0 END)
+                FROM rounds WHERE winner IS NOT NULL AND monster4_name IN ({placeholders})
+                GROUP BY monster4_name
+            ) GROUP BY name
+        """, names * 4).fetchall()
+    result = {r["name"]: {"appeared": r["appeared"], "won": r["won"] or 0} for r in rows}
+    for name in names:
+        result.setdefault(name, {"appeared": 0, "won": 0})
+    return result
 
 
 def get_teacher_stats(teacher_name: str) -> dict:
     with get_conn() as conn:
-        appeared = conn.execute(
-            "SELECT COUNT(*) as cnt FROM rounds WHERE winner IS NOT NULL AND teacher_name=?",
-            (teacher_name,)
-        ).fetchone()["cnt"]
-        won = conn.execute(
-            "SELECT COUNT(*) as cnt FROM rounds WHERE winner='teacher' AND teacher_name=?",
-            (teacher_name,)
-        ).fetchone()["cnt"]
-    return {"name": teacher_name, "appeared": appeared, "won": won}
+        row = conn.execute("""
+            SELECT COUNT(*) as appeared,
+                   SUM(CASE WHEN winner='teacher' THEN 1 ELSE 0 END) as won
+            FROM rounds WHERE winner IS NOT NULL AND teacher_name=?
+        """, (teacher_name,)).fetchone()
+    return {"name": teacher_name, "appeared": row["appeared"], "won": row["won"] or 0}
 
 
 def get_overall_stats() -> dict:
@@ -396,29 +405,38 @@ def get_teacher_odds_winrate() -> dict[int, dict]:
     return {r["odds"]: {"appeared": r["appeared"], "won": r["won"] or 0} for r in rows}
 
 
-def get_monster_name_odds_stats(name: str, odds: int) -> dict:
-    """Số lần 1 yêu quái CỤ THỂ thắng/xuất hiện tại MỘT giá trị bội cụ thể."""
+def get_monster_name_odds_stats_batch(names: list[str]) -> dict[tuple[str, int], dict]:
+    """Số lần thắng/xuất hiện của NHIỀU yêu quái tại TỪNG giá trị bội, trong
+    1 query (thay vì 1 query/con) — tránh N+1 round-trip khi gọi Turso.
+
+    Trả về {(name, odds_int): {"appeared": n, "won": w}}. Lấy tất cả mức bội
+    đã từng xuất hiện của các tên này rồi predictor tự tra theo bội cần dùng.
+    """
+    if not names:
+        return {}
+    placeholders = ",".join("?" * len(names))
     with get_conn() as conn:
-        row = conn.execute("""
-            SELECT COUNT(*) AS appeared, SUM(win) AS won FROM (
-                SELECT CASE WHEN winner='monster1' THEN 1 ELSE 0 END AS win
-                FROM rounds WHERE winner IS NOT NULL
-                  AND monster1_name=? AND CAST(ROUND(monster1_multiplier) AS INTEGER)=?
+        rows = conn.execute(f"""
+            SELECT name, odds, COUNT(*) AS appeared, SUM(win) AS won FROM (
+                SELECT monster1_name AS name,
+                       CAST(ROUND(monster1_multiplier) AS INTEGER) AS odds,
+                       CASE WHEN winner='monster1' THEN 1 ELSE 0 END AS win
+                FROM rounds WHERE winner IS NOT NULL AND monster1_name IN ({placeholders})
                 UNION ALL
-                SELECT CASE WHEN winner='monster2' THEN 1 ELSE 0 END
-                FROM rounds WHERE winner IS NOT NULL
-                  AND monster2_name=? AND CAST(ROUND(monster2_multiplier) AS INTEGER)=?
+                SELECT monster2_name, CAST(ROUND(monster2_multiplier) AS INTEGER),
+                       CASE WHEN winner='monster2' THEN 1 ELSE 0 END
+                FROM rounds WHERE winner IS NOT NULL AND monster2_name IN ({placeholders})
                 UNION ALL
-                SELECT CASE WHEN winner='monster3' THEN 1 ELSE 0 END
-                FROM rounds WHERE winner IS NOT NULL
-                  AND monster3_name=? AND CAST(ROUND(monster3_multiplier) AS INTEGER)=?
+                SELECT monster3_name, CAST(ROUND(monster3_multiplier) AS INTEGER),
+                       CASE WHEN winner='monster3' THEN 1 ELSE 0 END
+                FROM rounds WHERE winner IS NOT NULL AND monster3_name IN ({placeholders})
                 UNION ALL
-                SELECT CASE WHEN winner='monster4' THEN 1 ELSE 0 END
-                FROM rounds WHERE winner IS NOT NULL
-                  AND monster4_name=? AND CAST(ROUND(monster4_multiplier) AS INTEGER)=?
-            )
-        """, (name, odds) * 4).fetchone()
-    return {"appeared": row["appeared"], "won": row["won"] or 0}
+                SELECT monster4_name, CAST(ROUND(monster4_multiplier) AS INTEGER),
+                       CASE WHEN winner='monster4' THEN 1 ELSE 0 END
+                FROM rounds WHERE winner IS NOT NULL AND monster4_name IN ({placeholders})
+            ) GROUP BY name, odds
+        """, names * 4).fetchall()
+    return {(r["name"], r["odds"]): {"appeared": r["appeared"], "won": r["won"] or 0} for r in rows}
 
 
 def get_teacher_name_odds_stats(name: str, odds: int) -> dict:
