@@ -342,11 +342,21 @@ with tab1:
         elif len(set(names_norm)) < 4:
             st.error("⚠️ 4 yêu quái phải khác nhau — đang có tên bị trùng.")
         else:
+            sig = (
+                tuple(sorted((names_norm[i], monsters[i]["multiplier"]) for i in range(4))),
+                canonical_name(teacher["name"]), teacher["multiplier"],
+            )
+            prev = st.session_state.get("pred")
+            # Bấm lại y hệt trận vừa dự đoán (chưa ghi KQ) → tái dùng round_id
+            # cũ thay vì tạo bản ghi "chờ KQ" mới mỗi lần bấm (tránh rác DB).
+            if prev and prev.get("sig") == sig and prev.get("recorded") is None:
+                round_id = prev["round_id"]
+            else:
+                round_id = db.save_round(monsters, teacher, winner=None, source="web")
             with st.spinner("Đang tính toán..."):
                 prediction = pred.predict(monsters, teacher)
-            round_id = db.save_round(monsters, teacher, winner=None, source="web")
             st.session_state["pred"] = {
-                "prediction": prediction, "monsters": monsters,
+                "prediction": prediction, "monsters": monsters, "sig": sig,
                 "teacher": teacher, "round_id": round_id, "recorded": None,
             }
             st.session_state["last_round_id"] = round_id
