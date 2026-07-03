@@ -34,6 +34,48 @@ def _init_db_once():
 _init_db_once()
 
 
+# ─── Cache các truy vấn đọc dùng chung nhiều nơi ─────────────────────────
+# Streamlit chạy lại TOÀN BỘ script (cả 5 tab, kể cả tab không hiển thị)
+# trên MỌI tương tác (chọn 1 yêu quái, kéo slider...). Không cache thì mỗi
+# lần đó bắn lại ~12 round-trip mạng tới Turso dù không có gì thay đổi.
+# Cache vô thời hạn (không TTL) — luôn ĐÚNG vì được `.clear()` thủ công
+# ngay sau các thao tác ghi/xóa (update_winner, save_round, import, dọn rác).
+@st.cache_data(show_spinner=False)
+def _cached_overall_stats():
+    return db.get_overall_stats()
+
+
+@st.cache_data(show_spinner=False)
+def _cached_all_competitor_stats():
+    return db.get_all_competitor_stats()
+
+
+@st.cache_data(show_spinner=False)
+def _cached_odds_calibration_data():
+    return db.get_odds_calibration_data()
+
+
+@st.cache_data(show_spinner=False)
+def _cached_recent_rounds(limit: int):
+    return db.get_recent_rounds(limit)
+
+
+@st.cache_data(show_spinner=False)
+def _cached_sa_rounds():
+    import strategy_analysis as sa
+    return sa.load_rounds()
+
+
+def _bust_data_cache():
+    """Gọi ngay sau khi ghi/xóa dữ liệu để các bảng/biểu đồ thống kê load
+    lại số liệu mới thay vì trả về cache cũ."""
+    _cached_overall_stats.clear()
+    _cached_all_competitor_stats.clear()
+    _cached_odds_calibration_data.clear()
+    _cached_recent_rounds.clear()
+    _cached_sa_rounds.clear()
+
+
 @st.cache_data(show_spinner="Đang tính ROI mô hình (leave-one-out, ~chục giây)...")
 def _cached_model_picks(n_rounds_with_winner: int):
     """LOO replay (TỐN KÉM ~chục giây) — cache theo SỐ TRẬN.
@@ -54,7 +96,7 @@ st.set_page_config(
 # ─── Sidebar: tổng quan + hướng dẫn nhanh ───────────────────
 with st.sidebar:
     st.header("📊 Tổng quan")
-    _ov = db.get_overall_stats()
+    _ov = _cached_overall_stats()
     st.metric("Tổng trận có kết quả", _ov["total"])
     _sc = st.columns(2)
     _sc[0].metric("Thầy thoát", f"{_ov['teacher_win_rate']:.0f}%")
@@ -71,6 +113,7 @@ with st.sidebar:
             _cc = st.columns(2)
             if _cc[0].button("✅ Xóa", type="primary", width="stretch"):
                 n = db.delete_pending_rounds()
+                _bust_data_cache()
                 st.session_state.pop("confirm_clean", None)
                 st.session_state.pop("pred", None)        # tránh trỏ tới trận đã xóa
                 st.session_state.pop("last_round_id", None)
@@ -211,6 +254,7 @@ def render_prediction(state):
         for (slot, nm), bc in zip(labels, btn_cols):
             if bc.button(nm, key=f"rec_{round_id}_{slot}", width="stretch"):
                 db.update_winner(round_id, slot)
+                _bust_data_cache()
                 state["recorded"] = slot
                 state["recorded_label"] = "Thầy thoát" if slot == "teacher" else nm
                 st.rerun()
@@ -353,6 +397,7 @@ with tab1:
                 round_id = prev["round_id"]
             else:
                 round_id = db.save_round(monsters, teacher, winner=None, source="web")
+                _bust_data_cache()  # trận mới -> đổi "Chờ nhập KQ" / danh sách trận
             with st.spinner("Đang tính toán..."):
                 prediction = pred.predict(monsters, teacher)
             st.session_state["pred"] = {
@@ -374,7 +419,7 @@ with tab2:
     st.caption("💡 Cách nhanh nhất: bấm nút người thắng **ngay dưới kết quả ở tab Dự đoán**. "
                "Tab này để nhập cho các trận cũ còn sót.")
 
-    recent = db.get_recent_rounds(30)
+    recent = _cached_recent_rounds(30)
     pending = [r for r in recent if r["winner"] is None]
 
     if not pending:
@@ -399,6 +444,7 @@ with tab2:
 
         if st.button("✅ Lưu kết quả", type="primary"):
             db.update_winner(r["id"], winner_slot)
+            _bust_data_cache()
             st.success(f"Đã lưu trận #{r['id']} → {winner_label} 📈")
             st.rerun()
 
@@ -408,7 +454,7 @@ with tab2:
 with tab3:
     st.header("Thống kê")
 
-    overall = db.get_overall_stats()
+    overall = _cached_overall_stats()
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Tổng trận", overall["total"])
     c2.metric("Yêu quái thắng", overall["monster_wins"])
@@ -429,7 +475,7 @@ with tab3:
             st.plotly_chart(fig_pie, width="stretch")
 
         # Thống kê từng nhân vật
-        all_comp_stats = db.get_all_competitor_stats()
+        all_comp_stats = _cached_all_competitor_stats()
         non_teacher = [s for s in all_comp_stats if s["name"] != "Duong_tang" and s["appeared"] > 0]
         teacher_stat = next((s for s in all_comp_stats if s["name"] == "Duong_tang"), None)
 
@@ -472,7 +518,7 @@ with tab3:
         st.subheader("📐 Phân tích Odds Calibration")
         st.caption("Kiểm tra xem odds của game có phản ánh đúng xác suất thắng thực tế không")
 
-        calib_data = db.get_odds_calibration_data()
+        calib_data = _cached_odds_calibration_data()
         if len(calib_data) >= 20:
             calib_df = pd.DataFrame(calib_data)
             # Nhóm odds theo bins
@@ -519,7 +565,7 @@ with tab3:
         st.divider()
         st.subheader("💰 Phân tích chiến lược cược (ROI)")
         import strategy_analysis as sa
-        sa_rounds = sa.load_rounds()
+        sa_rounds = _cached_sa_rounds()
         if len(sa_rounds) < 15:
             st.info("Cần ít nhất 15 trận có kết quả để phân tích ROI.")
         else:
@@ -760,7 +806,7 @@ with tab3:
 with tab4:
     st.header("Lịch sử trận đấu")
 
-    all_rounds = db.get_recent_rounds(200)
+    all_rounds = _cached_recent_rounds(200)
     if not all_rounds:
         st.info("Chưa có dữ liệu.")
     else:
@@ -819,6 +865,7 @@ with tab5:
 
             imported, skipped = import_rounds(rounds, skip_existing=skip_existing, verbose=False)
 
+        _bust_data_cache()
         st.success(f"✅ Import xong: **{imported}** trận mới, bỏ qua {skipped} trận trùng.")
         st.rerun()
 
@@ -838,7 +885,7 @@ with tab5:
     # Cập nhật danh sách known_monsters từ DB
     st.divider()
     st.subheader("Danh sách yêu quái đã biết (từ DB)")
-    all_stats = db.get_all_competitor_stats()
+    all_stats = _cached_all_competitor_stats()
     known_from_db = [s["name"] for s in all_stats if s["name"] != "Duong_tang"]
     if known_from_db:
         st.write(", ".join(sorted(known_from_db)))
