@@ -8,3 +8,4 @@ matplotlib
 plotly
 numpy
 libsql==0.1.11
+tzdata

@@ -1,7 +1,18 @@
 import sqlite3
 import json
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from config import DATABASE_PATH, TURSO_DATABASE_URL, TURSO_AUTH_TOKEN, canonical_name
+
+VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+
+
+def _now_vn_str() -> str:
+    """Giờ hiện tại theo múi giờ Việt Nam, tính TRONG PYTHON (không nhờ SQL
+    `datetime('now','localtime')`) vì máy chủ chạy câu lệnh đó có thể là
+    máy PC (VN, đúng) hoặc máy chủ Turso/Streamlit Cloud (thường UTC, sai
+    lệch 7 tiếng) tùy nơi ghi — kết quả không nhất quán."""
+    return datetime.now(VN_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
 # Path lúc import module — dùng để nhận biết khi backtest.py/tune_shrinkage.py/
 # strategy_analysis.py tạm tráo `database.DATABASE_PATH` sang 1 file SQLite tạm
@@ -143,14 +154,16 @@ def save_round(monsters: list[dict], teacher: dict, winner: str | None = None,
     with get_conn() as conn:
         cursor = conn.execute("""
             INSERT INTO rounds
-              (monster1_name, monster1_multiplier,
+              (created_at,
+               monster1_name, monster1_multiplier,
                monster2_name, monster2_multiplier,
                monster3_name, monster3_multiplier,
                monster4_name, monster4_multiplier,
                teacher_name, teacher_multiplier,
                winner, pattern_key, source, notes)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
+            _now_vn_str(),
             monsters[0]["name"], monsters[0]["multiplier"],
             monsters[1]["name"], monsters[1]["multiplier"],
             monsters[2]["name"], monsters[2]["multiplier"],
