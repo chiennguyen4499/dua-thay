@@ -8,7 +8,7 @@ setup.bat
 ```
 Hoặc cài tay:
 ```
-pip install python-telegram-bot==21.3 streamlit pandas python-dotenv pillow matplotlib plotly numpy easyocr
+pip install python-telegram-bot==21.3 streamlit pandas python-dotenv pillow matplotlib plotly numpy libsql==0.1.11 tzdata
 ```
 
 ### Bước 2: Tạo Telegram Bot
@@ -44,15 +44,14 @@ Web UI mở tại: http://localhost:8501
 ### Telegram Bot
 | Lệnh | Mô tả |
 |------|-------|
-| Gửi ảnh | Bot tự OCR và dự đoán |
-| `/manual` | Nhập tay 4 yêu quái + thầy |
+| `/manual` | Nhập tay 4 yêu quái + thầy → dự đoán |
 | `/result Hồ Ly` | Lưu kết quả (tên yêu quái thắng) |
 | `/result thầy` | Lưu kết quả (thầy thoát) |
 | `/stats` | Xem thống kê |
 | `/cancel` | Hủy thao tác hiện tại |
 
 ### Web UI
-- **Tab Dự đoán**: Nhập tay hoặc upload ảnh → nhận dự đoán + biểu đồ
+- **Tab Dự đoán**: Nhập tay 4 yêu quái + thầy → nhận dự đoán + biểu đồ
 - **Tab Nhập kết quả**: Chọn trận và nhập kết quả sau khi xem
 - **Tab Thống kê**: Biểu đồ tỷ lệ thắng tổng quát và từng nhân vật
 - **Tab Lịch sử**: Toàn bộ lịch sử các trận
@@ -77,8 +76,7 @@ Bot sử dụng 3 phương pháp (theo thứ tự ưu tiên):
 ├── web_app.py       — Giao diện web (Streamlit)
 ├── telegram_bot.py  — Telegram bot
 ├── predictor.py     — Logic dự đoán
-├── database.py      — Database SQLite
-├── ocr_module.py    — Nhận dạng ảnh (EasyOCR)
+├── database.py      — Database (SQLite local / Turso online)
 ├── config.py        — Cấu hình
 ├── .env             — Token Telegram (tạo từ .env.example)
 └── data/

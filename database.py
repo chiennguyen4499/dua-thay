@@ -465,8 +465,8 @@ def get_teacher_name_odds_stats(name: str, odds: int) -> dict:
 
 
 def clear_all_rounds() -> int:
-    """Xóa TOÀN BỘ dữ liệu trận (dùng khi Import CSV muốn nạp lại từ đầu).
-    Trả về số dòng đã xóa."""
+    """Xóa TOÀN BỘ dữ liệu trận. Trả về số dòng đã xóa.
+    (Hàm tiện ích, hiện không có UI gọi — giữ lại phòng khi cần nạp lại từ đầu.)"""
     with get_conn() as conn:
         cur = conn.execute("DELETE FROM rounds")
         conn.commit()

@@ -40,23 +40,19 @@ Với mỗi trận, hệ thống trả về:
 - Lịch sử [thắng/xuất hiện] của từng nhân vật.
 
 ### FR4 — Bot Telegram
-- Gửi **ảnh chụp màn hình** trận → OCR đọc 4 yêu quái + thầy + bội số → xác nhận/sửa → trả dự đoán.
-- `/manual` — nhập tay từng nhân vật + bội số nếu không muốn dùng ảnh.
+- `/manual` — nhập tay từng nhân vật + bội số → trả dự đoán.
 - `/result <tên>` hoặc bấm nút inline — ghi lại **ai đã thắng** sau khi trận kết thúc.
 - `/stats` — xem thống kê tổng quát.
 - `/cancel` — hủy thao tác.
 
 ### FR5 — Web UI (Streamlit)
-- Tab **Dự đoán**: nhập tay 4 yêu quái + thầy + bội số, HOẶC upload ảnh để OCR.
+- Tab **Dự đoán**: nhập tay 4 yêu quái + thầy + bội số.
 - Tab **Nhập kết quả**: chọn trận đang chờ và ghi nhận người thắng.
 - Tab **Thống kê**: tỷ lệ thắng tổng quát, theo từng nhân vật, và biểu đồ **Odds Calibration** (so sánh tỷ lệ thắng thực tế vs xác suất implied từ bội số).
 - Tab **Lịch sử**: bảng các trận đã ghi.
-- Tab **Import CSV**: upload file CSV lịch sử từ trình duyệt.
 
 ### FR6 — Dữ liệu & học dần
-- Import **dữ liệu lịch sử từ CSV** (format `Round_id, Competitor, Odds, Is_winner`). Dữ liệu gốc: 63 trận.
 - Mỗi lần dự đoán xong và biết kết quả, người dùng phản hồi → hệ thống **tích lũy dữ liệu mới** và dự đoán ngày càng tốt hơn.
-- **Không import trùng**: cùng `Round_id` từ cùng nguồn chỉ import một lần.
 
 ## 4. Yêu cầu phi chức năng
 
@@ -64,7 +60,7 @@ Với mỗi trận, hệ thống trả về:
 - **Lưu trữ**: database online dùng chung (Turso/libSQL) là nguồn dữ liệu sống, để bot (PC) và Web UI (Cloud) luôn thấy cùng dữ liệu. SQLite local (`data/rounds.db`) vẫn giữ lại làm fallback khi chưa cấu hình Turso, cho backtest/tune tham số (chạy nhanh, không qua mạng), và làm lưới an toàn rollback.
 - **Chạy đồng thời**: Telegram bot chạy trên PC (`python main.py` hoặc `--bot`); Web UI chạy như một deployment **riêng biệt** trên Streamlit Cloud, không cùng tiến trình/máy với bot nữa — đồng bộ qua database dùng chung.
 - **Bảo mật**: token Telegram để trong `.env` (không commit). Turso URL/token để trong `.env` (local) và Streamlit Cloud Secrets (Web). Có thể giới hạn `ALLOWED_CHAT_ID`.
-- **Tiếng Việt**: toàn bộ UI và OCR hỗ trợ tiếng Việt. Tên nhân vật lưu dạng không dấu, gạch dưới (vd `Bach_nhan_quan`).
+- **Tiếng Việt**: toàn bộ UI hỗ trợ tiếng Việt. Tên nhân vật lưu dạng không dấu, gạch dưới (vd `Bach_nhan_quan`).
 
 ## 5. Ràng buộc dữ liệu
 
@@ -81,9 +77,8 @@ Với mỗi trận, hệ thống trả về:
 
 ## 7. Trạng thái hiện tại (tính đến 2026-07-02)
 
-- ✅ Database, predictor, Telegram bot, Web UI, import CSV: hoạt động.
-- ✅ 175 trận trong database (đã migrate sang Turso, giữ nguyên id/created_at, verify khớp 100%).
+- ✅ Database, predictor, Telegram bot, Web UI: hoạt động.
 - ✅ Web UI deploy lên Streamlit Community Cloud, dùng chung database Turso với bot Telegram trên PC — ghi/đọc từ xa hoạt động đúng (test: ghi kết quả qua Web Cloud, đọc thấy ngay từ script khác dùng cùng database).
 - ⏳ Cần đặt `ALLOWED_CHAT_ID` trong `.env` (lấy từ @userinfobot).
 - ⏳ Token Telegram từng bị lộ trong log → nên revoke qua @BotFather và thay token mới.
-- ⏳ OCR (EasyOCR) chưa test với ảnh game thật; chưa xác nhận `easyocr`/`torch` build được trên Streamlit Community Cloud free tier (nếu không, chỉ dùng OCR qua bot Telegram trên PC).
+- ℹ️ Chức năng **upload ảnh (OCR)** và **import CSV** đã được gỡ bỏ (2026-07-13) — chỉ còn nhập tay. Dữ liệu nhập qua Web/Telegram thủ công.
