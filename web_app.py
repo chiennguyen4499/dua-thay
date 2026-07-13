@@ -313,8 +313,9 @@ if active_tab == TAB_LABELS[0]:
 
     # Nhập ĐÚNG cấu trúc game: 2 yêu quái bội THẤP (3–5) — luôn là 1 trong 8 con
     # cố định — + 2 yêu quái bội CAO (6–12) — 10 con còn lại. Dropdown tên đã lọc
-    # sẵn theo nhóm nên không phải dò cả 18 con. Trong cùng nhóm, bội không được
-    # trùng (lọc option + callback tự đẩy con còn lại sang giá trị khác).
+    # sẵn theo nhóm nên không phải dò cả 18 con. Tên trong cùng nhóm không được trùng
+    # (callback tự đẩy con còn lại sang tên khác), nhưng BỘI được phép trùng
+    # (thực tế vẫn có trường hợp 2 con cùng bội 5, hoặc 2 con cùng bội 9).
     # Không bọc st.form: các truy vấn nặng đã @st.cache_data ở trên, nên rerun
     # mỗi lần chọn không tốn round-trip Turso — không cần chặn rerun nữa.
     LOW_MONSTERS = ["Bach_tuong", "Thanh_nguu", "Loc_dai_tien", "Dai_bang_kim_si",
@@ -338,13 +339,11 @@ if active_tab == TAB_LABELS[0]:
         lo0_name = st.segmented_control("Tên (thấp 1)", LOW_MONSTERS, format_func=display_name,
                                         key="lo0_name", on_change=_avoid_clash,
                                         args=("lo0_name", "lo1_name", LOW_MONSTERS))
-        lo0_boi = st.segmented_control("Bội (thấp 1)", LOW_BOI, default=5, key="lo0_boi",
-                                       on_change=_avoid_clash, args=("lo0_boi", "lo1_boi", LOW_BOI))
+        lo0_boi = st.segmented_control("Bội (thấp 1)", LOW_BOI, default=5, key="lo0_boi")
     with cols_lo[1]:
         lo1_name_opts = [m for m in LOW_MONSTERS if m != st.session_state.get("lo0_name")]
         lo1_name = st.segmented_control("Tên (thấp 2)", lo1_name_opts, format_func=display_name, key="lo1_name")
-        lo1_opts = [b for b in LOW_BOI if b != st.session_state.get("lo0_boi")]
-        lo1_boi = st.segmented_control("Bội (thấp 2)", lo1_opts, default=3, key="lo1_boi")
+        lo1_boi = st.segmented_control("Bội (thấp 2)", LOW_BOI, default=3, key="lo1_boi")
 
     st.subheader("👺 2 con bội CAO (6–12)")
     cols_hi = st.columns(2)
@@ -352,13 +351,11 @@ if active_tab == TAB_LABELS[0]:
         hi0_name = st.segmented_control("Tên (cao 1)", HIGH_MONSTERS, format_func=display_name,
                                         key="hi0_name", on_change=_avoid_clash,
                                         args=("hi0_name", "hi1_name", HIGH_MONSTERS))
-        hi0_boi = st.segmented_control("Bội (cao 1)", HIGH_BOI, default=9, key="hi0_boi",
-                                       on_change=_avoid_clash, args=("hi0_boi", "hi1_boi", HIGH_BOI))
+        hi0_boi = st.segmented_control("Bội (cao 1)", HIGH_BOI, default=9, key="hi0_boi")
     with cols_hi[1]:
         hi1_name_opts = [m for m in HIGH_MONSTERS if m != st.session_state.get("hi0_name")]
         hi1_name = st.segmented_control("Tên (cao 2)", hi1_name_opts, format_func=display_name, key="hi1_name")
-        hi1_opts = [b for b in HIGH_BOI if b != st.session_state.get("hi0_boi")]
-        hi1_boi = st.segmented_control("Bội (cao 2)", hi1_opts, default=6, key="hi1_boi")
+        hi1_boi = st.segmented_control("Bội (cao 2)", HIGH_BOI, default=6, key="hi1_boi")
 
     monsters = [
         {"name": lo0_name or "", "multiplier": float(lo0_boi or 5)},
