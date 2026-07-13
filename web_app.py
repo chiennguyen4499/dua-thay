@@ -365,12 +365,10 @@ if active_tab == TAB_LABELS[0]:
     ]
 
     st.subheader("👨‍🏫 Sư Phụ")
-    tc = st.columns([1, 3])
-    with tc[0]:
-        t_mult = st.number_input("Bội Thầy", min_value=13.0, max_value=30.0,
-                                 value=18.0, step=1.0, format="%.0f", key="t_mult")
-    tc[1].caption("Thầy luôn là **Duong_tang** — chỉ cần nhập bội (thường 14–26).")
-    teacher = {"name": "Duong_tang", "multiplier": t_mult}
+    st.caption("Thầy luôn là **Duong_tang** — chỉ cần chọn bội (14–26).")
+    TEACHER_BOI = list(range(14, 27))
+    t_mult = st.segmented_control("Bội Thầy", TEACHER_BOI, default=18, key="t_mult")
+    teacher = {"name": "Duong_tang", "multiplier": float(t_mult or 18)}
 
     st.divider()
     submitted = st.button("🔮 Dự đoán ngay!", type="primary", width="stretch")
