@@ -10,15 +10,11 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [1/3] Cai cac thu vien can thiet...
-pip install python-telegram-bot==21.3 streamlit pandas python-dotenv pillow matplotlib plotly numpy
+echo [1/2] Cai cac thu vien can thiet...
+pip install python-telegram-bot==21.3 streamlit pandas python-dotenv pillow matplotlib plotly numpy libsql==0.1.11 tzdata
 
 echo.
-echo [2/3] Cai EasyOCR (co the mat vai phut)...
-pip install easyocr
-
-echo.
-echo [3/3] Tao file cau hinh...
+echo [2/2] Tao file cau hinh...
 if not exist .env (
     copy .env.example .env
     echo [OK] Da tao file .env

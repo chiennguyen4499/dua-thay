@@ -1,5 +1,4 @@
 python-telegram-bot==21.3
-easyocr
 streamlit>=1.40
 pandas
 python-dotenv
