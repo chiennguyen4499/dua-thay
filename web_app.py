@@ -22,7 +22,7 @@ import plotly.graph_objects as go
 
 import database as db
 import predictor as pred
-from config import KNOWN_MONSTERS, KNOWN_TEACHERS
+from config import KNOWN_MONSTERS, KNOWN_TEACHERS, display_name
 
 @st.cache_resource
 def _init_db_once():
@@ -129,9 +129,6 @@ with st.sidebar:
         "4. Bấm **🆕 Nhập trận mới** để nhập trận kế\n\n"
         "→ Bot học dần, dự đoán tốt hơn."
     )
-
-st.title("🎮 Sư Phụ Chạy Mau — Hệ thống dự đoán")
-
 
 # ─── Helper: render 1 kết quả dự đoán (sống qua rerun + ghi KQ tại chỗ) ──
 METHOD_INFO = {
@@ -314,46 +311,70 @@ if active_tab == TAB_LABELS[0]:
             icon="⚠️",
         )
 
-    monsters = []
-
-    # Nhập theo ĐÚNG cấu trúc game: luôn 2 con bội THẤP (3–5) + 2 con bội CAO (6–12).
-    # Bọc trong st.form để chọn/gõ thoải mái, CHỈ chạy dự đoán khi bấm nút — không
-    # rerun và không bắn ~chục query Turso sau MỖI lần chọn -> nhập nhanh & mượt.
-    all_known = sorted(KNOWN_MONSTERS)
+    # Nhập ĐÚNG cấu trúc game: 2 yêu quái bội THẤP (3–5) — luôn là 1 trong 8 con
+    # cố định — + 2 yêu quái bội CAO (6–12) — 10 con còn lại. Dropdown tên đã lọc
+    # sẵn theo nhóm nên không phải dò cả 18 con. Trong cùng nhóm, bội không được
+    # trùng (lọc option + callback tự đẩy con còn lại sang giá trị khác).
+    # Không bọc st.form: các truy vấn nặng đã @st.cache_data ở trên, nên rerun
+    # mỗi lần chọn không tốn round-trip Turso — không cần chặn rerun nữa.
+    LOW_MONSTERS = ["Bach_tuong", "Thanh_nguu", "Loc_dai_tien", "Dai_bang_kim_si",
+                    "Hong_hai_nhi", "Lao_ban", "Thanh_su", "Xich_vy_ma_hat"]
+    HIGH_MONSTERS = [m for m in sorted(KNOWN_MONSTERS) if m not in LOW_MONSTERS]
     LOW_BOI, HIGH_BOI = [3, 4, 5], [6, 7, 8, 9, 10, 11, 12]
     MONSTER_KEYS = ("lo0_name", "lo0_boi", "lo1_name", "lo1_boi",
                     "hi0_name", "hi0_boi", "hi1_name", "hi1_boi", "t_mult")
 
-    with st.form("nhap_tran", border=False):
-        st.subheader("👹 2 con bội THẤP (3–5)")
-        cols_lo = st.columns(2)
-        for i, (col, dboi) in enumerate(zip(cols_lo, [5, 3])):
-            with col:
-                nm = st.selectbox(f"Tên (thấp {i+1})", all_known, index=None,
-                                  placeholder="Chọn yêu quái…", key=f"lo{i}_name")
-                bo = st.segmented_control(f"Bội (thấp {i+1})", LOW_BOI, default=dboi,
-                                          key=f"lo{i}_boi")
-                monsters.append({"name": nm or "", "multiplier": float(bo or dboi)})
+    def _avoid_boi_clash(primary_key, secondary_key, boi_list):
+        """2 con cùng nhóm lỡ chọn trùng bội -> tự đẩy con còn lại sang giá trị khác."""
+        p, s = st.session_state.get(primary_key), st.session_state.get(secondary_key)
+        if p is not None and p == s:
+            remaining = [b for b in boi_list if b != p]
+            if remaining:
+                st.session_state[secondary_key] = remaining[0]
 
-        st.subheader("👺 2 con bội CAO (6–12)")
-        cols_hi = st.columns(2)
-        for i, (col, dboi) in enumerate(zip(cols_hi, [9, 6])):
-            with col:
-                nm = st.selectbox(f"Tên (cao {i+1})", all_known, index=None,
-                                  placeholder="Chọn yêu quái…", key=f"hi{i}_name")
-                bo = st.segmented_control(f"Bội (cao {i+1})", HIGH_BOI, default=dboi,
-                                          key=f"hi{i}_boi")
-                monsters.append({"name": nm or "", "multiplier": float(bo or dboi)})
+    st.subheader("👹 2 con bội THẤP (3–5)")
+    cols_lo = st.columns(2)
+    with cols_lo[0]:
+        lo0_name = st.selectbox("Tên (thấp 1)", LOW_MONSTERS, index=None,
+                                 placeholder="Chọn yêu quái…", format_func=display_name, key="lo0_name")
+        lo0_boi = st.segmented_control("Bội (thấp 1)", LOW_BOI, default=5, key="lo0_boi",
+                                       on_change=_avoid_boi_clash, args=("lo0_boi", "lo1_boi", LOW_BOI))
+    with cols_lo[1]:
+        lo1_name = st.selectbox("Tên (thấp 2)", LOW_MONSTERS, index=None,
+                                 placeholder="Chọn yêu quái…", format_func=display_name, key="lo1_name")
+        lo1_opts = [b for b in LOW_BOI if b != st.session_state.get("lo0_boi")]
+        lo1_boi = st.segmented_control("Bội (thấp 2)", lo1_opts, default=3, key="lo1_boi")
 
-        st.subheader("👨‍🏫 Sư Phụ")
-        tc = st.columns([1, 3])
-        with tc[0]:
-            t_mult = st.number_input("Bội Thầy", min_value=13.0, max_value=30.0,
-                                     value=18.0, step=1.0, format="%.0f", key="t_mult")
-        tc[1].caption("Thầy luôn là **Duong_tang** — chỉ cần nhập bội (thường 14–26).")
-        teacher = {"name": "Duong_tang", "multiplier": t_mult}
+    st.subheader("👺 2 con bội CAO (6–12)")
+    cols_hi = st.columns(2)
+    with cols_hi[0]:
+        hi0_name = st.selectbox("Tên (cao 1)", HIGH_MONSTERS, index=None,
+                                 placeholder="Chọn yêu quái…", format_func=display_name, key="hi0_name")
+        hi0_boi = st.segmented_control("Bội (cao 1)", HIGH_BOI, default=9, key="hi0_boi",
+                                       on_change=_avoid_boi_clash, args=("hi0_boi", "hi1_boi", HIGH_BOI))
+    with cols_hi[1]:
+        hi1_name = st.selectbox("Tên (cao 2)", HIGH_MONSTERS, index=None,
+                                 placeholder="Chọn yêu quái…", format_func=display_name, key="hi1_name")
+        hi1_opts = [b for b in HIGH_BOI if b != st.session_state.get("hi0_boi")]
+        hi1_boi = st.segmented_control("Bội (cao 2)", hi1_opts, default=6, key="hi1_boi")
 
-        submitted = st.form_submit_button("🔮 Dự đoán ngay!", type="primary", width="stretch")
+    monsters = [
+        {"name": lo0_name or "", "multiplier": float(lo0_boi or 5)},
+        {"name": lo1_name or "", "multiplier": float(lo1_boi or 3)},
+        {"name": hi0_name or "", "multiplier": float(hi0_boi or 9)},
+        {"name": hi1_name or "", "multiplier": float(hi1_boi or 6)},
+    ]
+
+    st.subheader("👨‍🏫 Sư Phụ")
+    tc = st.columns([1, 3])
+    with tc[0]:
+        t_mult = st.number_input("Bội Thầy", min_value=13.0, max_value=30.0,
+                                 value=18.0, step=1.0, format="%.0f", key="t_mult")
+    tc[1].caption("Thầy luôn là **Duong_tang** — chỉ cần nhập bội (thường 14–26).")
+    teacher = {"name": "Duong_tang", "multiplier": t_mult}
+
+    st.divider()
+    submitted = st.button("🔮 Dự đoán ngay!", type="primary", width="stretch")
 
     if submitted:
         from config import canonical_name
@@ -387,7 +408,7 @@ if active_tab == TAB_LABELS[0]:
     if "pred" in st.session_state:
         st.divider()
         render_prediction(st.session_state["pred"])
-        if st.button("🆕 Nhập trận mới (xoá form)", width="stretch"):
+        if st.button("🆕 Nhập trận mới", width="stretch"):
             for _k in MONSTER_KEYS:
                 st.session_state.pop(_k, None)
             st.session_state.pop("pred", None)
