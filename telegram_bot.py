@@ -2,18 +2,15 @@
 Telegram bot cho Sư Phụ Chạy Mau predictor.
 
 Luồng chính:
-1. User gửi ảnh → OCR → xác nhận/sửa → dự đoán
+1. /manual → nhập tay thông tin trận → dự đoán
 2. /result <tên> → lưu kết quả trận vừa dự đoán
-3. /manual → nhập tay thông tin trận
-4. /stats → thống kê tổng quát
-5. /cancel → hủy thao tác hiện tại
+3. /stats → thống kê tổng quát
+4. /cancel → hủy thao tác hiện tại
 """
 
 import os
 import logging
 import json
-import tempfile
-from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ConversationHandler,
@@ -24,7 +21,7 @@ from telegram.constants import ParseMode
 import database as db
 import predictor as pred
 from config import (
-    TELEGRAM_TOKEN, ALLOWED_CHAT_ID, KNOWN_MONSTERS, KNOWN_TEACHERS,
+    TELEGRAM_TOKEN, ALLOWED_CHAT_ID, KNOWN_MONSTERS,
     TEACHER_DEFAULT, display_name,
 )
 
@@ -36,13 +33,11 @@ logger = logging.getLogger(__name__)
 
 # ConversationHandler states
 (
-    CONFIRM_OCR,
     SELECT_MONSTERS,
     ENTER_MULTS,
     AWAITING_RESULT,
-) = range(4)
+) = range(3)
 
-PENDING_ROUND_KEY = "pending_round"
 LAST_ROUND_ID_KEY = "last_round_id"
 
 
@@ -57,7 +52,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(
         "🎮 *Bot Dự Đoán Sư Phụ Chạy Mau*\n\n"
-        "📷 Gửi ảnh chụp màn hình chuẩn bị trận → Bot tự đọc và dự đoán\n\n"
         "Các lệnh:\n"
         "• /manual — Nhập thông tin trận thủ công\n"
         "• /result — Nhập kết quả sau khi trận kết thúc\n"
@@ -79,7 +73,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = "✅ Đã hủy."
     if deleted:
         msg += f" Đã xóa trận #{last_id} (chưa có kết quả)."
-    msg += " Gửi ảnh hoặc /manual để bắt đầu lại."
+    msg += " Dùng /manual để bắt đầu lại."
     await update.message.reply_text(msg)
     return ConversationHandler.END
 
@@ -174,91 +168,6 @@ def _stats_ev_section() -> str:
         pass
 
     return out
-
-
-# ─── Xử lý ảnh ───────────────────────────────────────────────
-
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _check_allowed(update):
-        return
-
-    await update.message.reply_text("🔍 Đang phân tích ảnh... Vui lòng chờ.")
-
-    photo = update.message.photo[-1]
-    file = await photo.get_file()
-
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-        tmp_path = tmp.name
-    await file.download_to_drive(tmp_path)
-
-    try:
-        from ocr_module import extract_game_info
-        info = extract_game_info(tmp_path, KNOWN_MONSTERS + KNOWN_TEACHERS)
-        os.unlink(tmp_path)
-    except ImportError:
-        os.unlink(tmp_path)
-        await update.message.reply_text(
-            "⚠️ EasyOCR chưa được cài. Hãy dùng /manual để nhập tay.\n"
-            "Cài bằng: `pip install easyocr`",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        return
-    except Exception as e:
-        os.unlink(tmp_path)
-        logger.error(f"OCR error: {e}")
-        await update.message.reply_text(
-            f"❌ OCR lỗi: {e}\n\nDùng /manual để nhập tay."
-        )
-        return
-
-    # Lưu vào context để xác nhận
-    context.user_data[PENDING_ROUND_KEY] = {
-        "monsters": info["monsters"],
-        "teacher": info["teacher"],
-    }
-
-    # Hiển thị kết quả OCR để user xác nhận
-    monsters = info["monsters"]
-    teacher = info["teacher"]
-
-    text = "📋 *Thông tin đọc được từ ảnh:*\n\n"
-    text += "*Yêu quái:*\n"
-    for i, m in enumerate(monsters, 1):
-        text += f"  {i}. {display_name(m['name'])} — {m['multiplier']}x\n"
-    text += f"\n*Sư Phụ:* {display_name(teacher['name'])} — {teacher['multiplier']}x\n"
-
-    if info.get("is_partial") or info["confidence"] < 0.6:
-        text += "\n⚠️ OCR không chắc chắn. Hãy kiểm tra lại!"
-
-    keyboard = [
-        [InlineKeyboardButton("✅ Đúng rồi, dự đoán đi!", callback_data="ocr_confirm")],
-        [InlineKeyboardButton("✏️ Nhập lại tay", callback_data="ocr_manual")],
-    ]
-    await update.message.reply_text(
-        text,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    return CONFIRM_OCR
-
-
-async def ocr_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    if query.data == "ocr_manual":
-        await query.edit_message_text("✏️ Chuyển sang nhập tay. Dùng /manual để bắt đầu.")
-        return ConversationHandler.END
-
-    pending = context.user_data.get(PENDING_ROUND_KEY)
-    if not pending:
-        await query.edit_message_text("❌ Không tìm thấy dữ liệu. Gửi lại ảnh.")
-        return ConversationHandler.END
-
-    await query.edit_message_text("✅ Đã xác nhận. Đang tính toán dự đoán...")
-    await _do_prediction(update, context, pending["monsters"], pending["teacher"],
-                         source="telegram_ocr")
-    return ConversationHandler.END
 
 
 # ─── Nhập tay: chọn yêu quái bằng nút + nhập bội số 1 dòng ───
@@ -450,7 +359,7 @@ async def result_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     last_id = context.user_data.get(LAST_ROUND_ID_KEY)
     if not last_id:
-        await update.message.reply_text("❌ Không tìm thấy trận vừa dự đoán. Gửi ảnh hoặc /manual trước.")
+        await update.message.reply_text("❌ Không tìm thấy trận vừa dự đoán. Dùng /manual trước.")
         return
 
     args = " ".join(context.args).strip().lower() if context.args else ""
@@ -502,15 +411,6 @@ def run_bot():
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # ConversationHandler cho OCR confirm
-    ocr_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.PHOTO, handle_photo)],
-        states={
-            CONFIRM_OCR: [CallbackQueryHandler(ocr_confirm_callback, pattern="^ocr_")],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
-
     # ConversationHandler cho nhập tay (chọn nút + nhập bội số 1 dòng)
     manual_conv = ConversationHandler(
         entry_points=[CommandHandler("manual", manual_start)],
@@ -524,7 +424,6 @@ def run_bot():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("result", result_command))
-    app.add_handler(ocr_conv)
     app.add_handler(manual_conv)
     # /cancel toàn cục: hoạt động cả khi đã thoát conversation (sau khi dự đoán xong)
     # — lúc đó vẫn cho phép hủy & xóa trận rác chưa nhập kết quả.

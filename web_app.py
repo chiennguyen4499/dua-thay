@@ -19,9 +19,6 @@ except Exception:
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from PIL import Image
-import tempfile
-import io
 
 import database as db
 import predictor as pred
@@ -274,7 +271,6 @@ TAB_LABELS = [
     "📝 Nhập kết quả",
     "📊 Thống kê",
     "📋 Lịch sử",
-    "📂 Import CSV",
 ]
 active_tab = st.radio("Chọn mục:", TAB_LABELS, horizontal=True, label_visibility="collapsed")
 
@@ -285,103 +281,62 @@ if active_tab == TAB_LABELS[0]:
     st.header("Dự đoán trận mới")
 
     with st.expander("📌 Ghi nhớ: heuristic thủ công tốt nhất (lọc từ ~120 chiến lược)"):
-        st.caption("Ảnh chụp dữ liệu 163 trận (30/06/2026). Xếp theo **cận dưới CI 95%** — "
+        st.caption("Ảnh chụp dữ liệu 237 trận (13/07/2026). Xếp theo **cận dưới CI 95%** — "
                    "ưu tiên chiến lược bền, phạt ăn may. Cập nhật lại khi data tăng nhiều.")
         st.markdown(
             "**🥇 Lõi bền nhất — yêu quái bội 5:** cược mỗi khi có.  \n"
-            "→ thắng **36/82 (44%)** vs bội hàm ý 20%, ROI **+120%**, CI [+65%, +174%].\n\n"
-            "**🥈 Edge thứ 2 — yêu quái bội 9:** thắng **26%** vs hàm ý 11%, ROI **+135%**, "
-            "CI [+17%, +252%] (cao nhưng variance lớn hơn bội 5).\n\n"
-            "**👨‍🏫 Thầy: đúng ngưỡng ≥18** (không thấp/cao hơn) → cược Thầy. ROI +134%, CI [+20%, +262%].\n\n"
+            "→ thắng **55/143 (38%)** vs bội hàm ý 27%, ROI **+92%**, CI [+50%, +134%].\n\n"
+            "**🥈 Edge thứ 2 — yêu quái bội 9:** thắng **23%** vs hàm ý ~14%, ROI **+103%**, "
+            "CI [+26%, +192%] (thật, nhưng variance lớn hơn bội 5).\n\n"
             "**🔗 Chiến lược lai tốt nhất:** Thầy **≥18 → Thầy**; còn lại → **bội 5** "
-            "(nếu không có 5 thì bội 9). ROI **+127%**, CI [+42%, +222%].\n\n"
-            "**🤖 Model (LOO) để so:** ROI +66%, CI [+12%, +127%]."
+            "(nếu không có 5 thì bội 9). ROI **+91%**, CI [+22%, +167%].\n\n"
+            "**🤖 Model (LOO) để so:** ROI ~+41–60%, CI vượt 0."
         )
         st.markdown(
-            "**🏷️ Theo TÊN (chuẩn hơn theo bội):**  \n"
-            "🥇 **Cược mạnh mọi lúc:** **Bach_nhan_quan** (+176%, thắng 33%), "
-            "**Bach_tuong** (+75%, thắng **48%** — bền nhất).  \n"
-            "🎯 **Kèo vàng khi ở bội 5:** **Thanh_nguu** (thắng **59%**!), **Dai_bang_kim_si** (56%), "
-            "**Hoang_mi_vuong** (54%).  \n"
-            "⭐ **Bội 9:** **Hac_hung_tinh** (+238%, mẫu nhỏ 8 lần).  \n"
-            "☠️ **Không bao giờ cược:** **Duong_dai_tien**, **Tieu_toan_phong** (chỉ 4% thắng, lỗ chắc)."
+            "**🏷️ Theo TÊN (đã kiểm soát bội, vẫn thật — CI vượt 0):**  \n"
+            "🥇 **Cược mạnh mọi lúc:** **Bach_nhan_quan** (+117%, thắng 27%), "
+            "**Bach_tuong** (+66%, thắng **45%** — bền nhất), **Hoang_mi_vuong** (+73%), "
+            "**Hong_hai_nhi** (+61%).  \n"
+            "🎯 **Kèo vàng khi ở bội 5:** **Hoang_mi_vuong** (56%), **Dai_bang_kim_si** (55%).  \n"
+            "☠️ **Không bao giờ cược:** **Duong_dai_tien** (9%), **Tieu_toan_phong** (7%), "
+            "**Mac_lan** (7%) — lỗ chắc."
         )
         st.warning(
-            "☠️ **TRÁNH bội 10:** thắng **0/46** trong lịch sử (ROI −100%).  \n"
-            "⚠️ **Bội 3 thực ra lỗ** (−9%) dù hay thắng — bội thấp, thắng không bù đủ.  \n"
-            "⚠️ Các bội 4, 6, 7, 8, 11, 12 ROI dương nhỏ nhưng **CI chạm âm** → không đáng tin, "
+            "☠️ **TRÁNH bội 10:** chỉ **3/69 (4%)**, ROI **−57%** — tệ nhất.  \n"
+            "⚠️ **Bội 3 vẫn lỗ nhẹ** (−4%) dù hay thắng — bội thấp, thắng không bù đủ.  \n"
+            "⚠️ Các bội 4, 6, 7, 8, 11, 12 ROI **CI chạm âm** → không đáng tin, "
             "chỉ \"ăn ké\" khi nằm chung dải với bội 5. Chỉ **bội 5 và 9** là tín hiệu thật.  \n"
-            "⚠️ Phần **\"Thầy≥18\"** variance lớn (chỉ ~13 lần thoát) — dễ thua 15-20 trận liền.",
+            "⚠️ **ĐÃ HẠ CẤP — \"Thầy ≥18\":** giờ CI **[−1%, +187%]** (chạm âm), hết đáng tin, "
+            "variance quá lớn (dễ thua 15-20 trận liền).  \n"
+            "⚠️ **ĐÃ HẠ CẤP — Thanh_nguu@5** (59%→**42%**) & **Hac_hung_tinh@9** (mẫu 9) — "
+            "ăn may/mẫu nhỏ, đã hồi quy.",
             icon="⚠️",
         )
-
-    input_method = st.radio("Cách nhập thông tin:", ["✏️ Nhập tay", "📷 Upload ảnh"], horizontal=True)
 
     monsters = []
     teacher = None
 
-    if input_method == "✏️ Nhập tay":
-        st.subheader("4 Yêu Quái")
-        cols = st.columns(4)
-        all_known = sorted(KNOWN_MONSTERS)
-        for i, col in enumerate(cols):
-            with col:
-                name_opts = [""] + all_known
-                name = col.selectbox(f"Yêu quái {i+1}", options=name_opts, key=f"m{i}_name")
-                mult = col.number_input(
-                    "Bội số", min_value=1.0, max_value=100.0, value=5.0,
-                    step=1.0, key=f"m{i}_mult", format="%.0f"
-                )
-                monsters.append({"name": name or f"Yeu_quai_{i+1}", "multiplier": mult})
+    st.subheader("4 Yêu Quái")
+    cols = st.columns(4)
+    all_known = sorted(KNOWN_MONSTERS)
+    for i, col in enumerate(cols):
+        with col:
+            name_opts = [""] + all_known
+            name = col.selectbox(f"Yêu quái {i+1}", options=name_opts, key=f"m{i}_name")
+            mult = col.number_input(
+                "Bội số", min_value=1.0, max_value=100.0, value=5.0,
+                step=1.0, key=f"m{i}_mult", format="%.0f"
+            )
+            monsters.append({"name": name or f"Yeu_quai_{i+1}", "multiplier": mult})
 
-        st.subheader("Sư Phụ")
-        c1, c2, _ = st.columns([2, 2, 4])
-        with c1:
-            t_name = c1.selectbox("Tên Sư Phụ", ["Duong_tang"] + KNOWN_TEACHERS, key="t_name")
-        with c2:
-            t_mult = c2.number_input("Bội số", min_value=1.0, max_value=100.0, value=20.0,
-                                     step=1.0, key="t_mult", format="%.0f")
-        teacher = {"name": t_name, "multiplier": t_mult}
-
-    else:  # Upload ảnh
-        uploaded = st.file_uploader("Upload ảnh chụp màn hình:", type=["jpg", "jpeg", "png"])
-        if uploaded:
-            st.image(uploaded, caption="Ảnh đã upload", width="stretch")
-            if st.button("🔍 Phân tích ảnh"):
-                with st.spinner("Đang OCR..."):
-                    try:
-                        from ocr_module import extract_game_info
-                        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-                            tmp.write(uploaded.getvalue())
-                            tmp_path = tmp.name
-                        info = extract_game_info(tmp_path, KNOWN_MONSTERS + KNOWN_TEACHERS)
-                        os.unlink(tmp_path)
-                        st.session_state["ocr_result"] = info
-                        st.success(f"OCR xong! Độ tin cậy: {info['confidence']*100:.0f}%")
-                    except ImportError:
-                        st.error("EasyOCR chưa cài. Chạy: `pip install easyocr`")
-                    except Exception as e:
-                        st.error(f"OCR lỗi: {e}")
-
-        if "ocr_result" in st.session_state:
-            info = st.session_state["ocr_result"]
-            st.subheader("Kết quả OCR — chỉnh sửa nếu cần:")
-            new_monsters = []
-            cols = st.columns(4)
-            for i, (col, m) in enumerate(zip(cols, info["monsters"])):
-                with col:
-                    name = col.text_input(f"Yêu quái {i+1}", value=m["name"], key=f"ocr_m{i}_name")
-                    mult = col.number_input("Bội số", value=float(m["multiplier"]),
-                                            min_value=1.0, max_value=100.0, step=1.0,
-                                            key=f"ocr_m{i}_mult", format="%.0f")
-                    new_monsters.append({"name": name, "multiplier": mult})
-            monsters = new_monsters
-            c1, c2 = st.columns(2)
-            t_name = c1.text_input("Sư Phụ", value=info["teacher"]["name"], key="ocr_t_name")
-            t_mult = c2.number_input("Bội số Sư Phụ", value=float(info["teacher"]["multiplier"]),
-                                     min_value=1.0, max_value=100.0, step=1.0,
-                                     key="ocr_t_mult", format="%.0f")
-            teacher = {"name": t_name, "multiplier": t_mult}
+    st.subheader("Sư Phụ")
+    c1, c2, _ = st.columns([2, 2, 4])
+    with c1:
+        t_name = c1.selectbox("Tên Sư Phụ", ["Duong_tang"] + KNOWN_TEACHERS, key="t_name")
+    with c2:
+        t_mult = c2.number_input("Bội số", min_value=1.0, max_value=100.0, value=20.0,
+                                 step=1.0, key="t_mult", format="%.0f")
+    teacher = {"name": t_name, "multiplier": t_mult}
 
     st.divider()
     if st.button("🔮 Dự đoán ngay!", type="primary", width="stretch"):
@@ -682,7 +637,7 @@ elif active_tab == TAB_LABELS[2]:
                 )
                 st.caption("Thầy thường thoát ~9-10% thực tế nhưng odds chỉ hàm ý ~4-6% → bị định giá thấp.")
     else:
-        st.info("Chưa có dữ liệu. Import CSV hoặc nhập trận thủ công.")
+        st.info("Chưa có dữ liệu. Hãy nhập trận và kết quả thủ công.")
 
     # ── Tinh chỉnh mô hình (chạy tune_shrinkage.py) ──
     st.divider()
@@ -837,63 +792,3 @@ elif active_tab == TAB_LABELS[3]:
                 "Nguồn": r["source"],
             })
         st.dataframe(pd.DataFrame(df_rows), width="stretch", hide_index=True)
-
-
-# ─── Tab 5: Import CSV ───────────────────────────────────────
-
-elif active_tab == TAB_LABELS[4]:
-    st.header("Import dữ liệu CSV")
-    st.caption("Format: `Round_id, Competitor, Odds, Is_winner`")
-
-    uploaded_csv = st.file_uploader("Chọn file CSV:", type=["csv"])
-
-    col1, col2 = st.columns(2)
-    with col1:
-        clear_before_import = st.checkbox("⚠️ Xóa database cũ trước khi import", value=False)
-    with col2:
-        skip_existing = st.checkbox("Bỏ qua trận đã import rồi", value=True)
-
-    if uploaded_csv and st.button("📥 Import", type="primary"):
-        with st.spinner("Đang import..."):
-            import csv as csv_mod
-            from import_csv import parse_rounds, import_rounds, TEACHER_NAME
-
-            # Lưu file tạm
-            with tempfile.NamedTemporaryFile(mode="wb", suffix=".csv", delete=False) as tmp:
-                tmp.write(uploaded_csv.getvalue())
-                tmp_path = tmp.name
-
-            if clear_before_import:
-                db.clear_all_rounds()
-
-            rounds = parse_rounds(tmp_path)
-            os.unlink(tmp_path)
-
-            imported, skipped = import_rounds(rounds, skip_existing=skip_existing, verbose=False)
-
-        _bust_data_cache()
-        st.success(f"✅ Import xong: **{imported}** trận mới, bỏ qua {skipped} trận trùng.")
-        st.rerun()
-
-    # Preview format
-    with st.expander("Xem format CSV mẫu"):
-        st.code("""Round_id,Competitor,Odds,Is_winner
-62,Mac_lan,12,0
-62,Hoang_mi_vuong,5,0
-62,Dai_bang_kim_si,4,0
-62,Thien_thu_yeu_co,9,0
-62,Duong_tang,20,1
-61,Hong_hai_nhi,3,0
-61,Bach_cot_tinh,9,1
-...""")
-        st.caption("Mỗi trận gồm 5 dòng: 4 yêu quái + Duong_tang. Is_winner=1 là người thắng.")
-
-    # Cập nhật danh sách known_monsters từ DB
-    st.divider()
-    st.subheader("Danh sách yêu quái đã biết (từ DB)")
-    all_stats = _cached_all_competitor_stats()
-    known_from_db = [s["name"] for s in all_stats if s["name"] != "Duong_tang"]
-    if known_from_db:
-        st.write(", ".join(sorted(known_from_db)))
-    else:
-        st.info("Chưa có dữ liệu trong database.")
