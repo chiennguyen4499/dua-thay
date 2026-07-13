@@ -318,7 +318,7 @@ if active_tab == TAB_LABELS[0]:
     # Không bọc st.form: các truy vấn nặng đã @st.cache_data ở trên, nên rerun
     # mỗi lần chọn không tốn round-trip Turso — không cần chặn rerun nữa.
     LOW_MONSTERS = ["Bach_tuong", "Thanh_nguu", "Loc_dai_tien", "Dai_bang_kim_si",
-                    "Hong_hai_nhi", "Lao_ban", "Thanh_su", "Xich_vy_ma_hat"]
+                    "Hong_hai_nhi", "Lao_ban", "Thanh_su", "Xich_vy_ma_hat", "Hoang_mi_vuong"]
     HIGH_MONSTERS = [m for m in sorted(KNOWN_MONSTERS) if m not in LOW_MONSTERS]
     LOW_BOI, HIGH_BOI = [3, 4, 5], [6, 7, 8, 9, 10, 11, 12]
     MONSTER_KEYS = ("lo0_name", "lo0_boi", "lo1_name", "lo1_boi",
