@@ -123,9 +123,10 @@ with st.sidebar:
     st.divider()
     st.markdown(
         "**Dùng nhanh**\n\n"
-        "1. Nhập 4 yêu quái + Thầy + bội số\n"
-        "2. Bấm **🔮 Dự đoán**\n"
-        "3. Sau trận, bấm nút **người thắng** ngay dưới kết quả\n\n"
+        "1. Chọn tên + chạm bội cho 2 con **thấp** & 2 con **cao**\n"
+        "2. Nhập bội Thầy → bấm **🔮 Dự đoán**\n"
+        "3. Sau trận, bấm nút **người thắng** ngay dưới kết quả\n"
+        "4. Bấm **🆕 Nhập trận mới** để nhập trận kế\n\n"
         "→ Bot học dần, dự đoán tốt hơn."
     )
 
@@ -314,36 +315,51 @@ if active_tab == TAB_LABELS[0]:
         )
 
     monsters = []
-    teacher = None
 
-    st.subheader("4 Yêu Quái")
-    cols = st.columns(4)
+    # Nhập theo ĐÚNG cấu trúc game: luôn 2 con bội THẤP (3–5) + 2 con bội CAO (6–12).
+    # Bọc trong st.form để chọn/gõ thoải mái, CHỈ chạy dự đoán khi bấm nút — không
+    # rerun và không bắn ~chục query Turso sau MỖI lần chọn -> nhập nhanh & mượt.
     all_known = sorted(KNOWN_MONSTERS)
-    for i, col in enumerate(cols):
-        with col:
-            name_opts = [""] + all_known
-            name = col.selectbox(f"Yêu quái {i+1}", options=name_opts, key=f"m{i}_name")
-            mult = col.number_input(
-                "Bội số", min_value=1.0, max_value=100.0, value=5.0,
-                step=1.0, key=f"m{i}_mult", format="%.0f"
-            )
-            monsters.append({"name": name or f"Yeu_quai_{i+1}", "multiplier": mult})
+    LOW_BOI, HIGH_BOI = [3, 4, 5], [6, 7, 8, 9, 10, 11, 12]
+    MONSTER_KEYS = ("lo0_name", "lo0_boi", "lo1_name", "lo1_boi",
+                    "hi0_name", "hi0_boi", "hi1_name", "hi1_boi", "t_mult")
 
-    st.subheader("Sư Phụ")
-    c1, c2, _ = st.columns([2, 2, 4])
-    with c1:
-        t_name = c1.selectbox("Tên Sư Phụ", ["Duong_tang"] + KNOWN_TEACHERS, key="t_name")
-    with c2:
-        t_mult = c2.number_input("Bội số", min_value=1.0, max_value=100.0, value=20.0,
-                                 step=1.0, key="t_mult", format="%.0f")
-    teacher = {"name": t_name, "multiplier": t_mult}
+    with st.form("nhap_tran", border=False):
+        st.subheader("👹 2 con bội THẤP (3–5)")
+        cols_lo = st.columns(2)
+        for i, (col, dboi) in enumerate(zip(cols_lo, [5, 3])):
+            with col:
+                nm = st.selectbox(f"Tên (thấp {i+1})", all_known, index=None,
+                                  placeholder="Chọn yêu quái…", key=f"lo{i}_name")
+                bo = st.segmented_control(f"Bội (thấp {i+1})", LOW_BOI, default=dboi,
+                                          key=f"lo{i}_boi")
+                monsters.append({"name": nm or "", "multiplier": float(bo or dboi)})
 
-    st.divider()
-    if st.button("🔮 Dự đoán ngay!", type="primary", width="stretch"):
+        st.subheader("👺 2 con bội CAO (6–12)")
+        cols_hi = st.columns(2)
+        for i, (col, dboi) in enumerate(zip(cols_hi, [9, 6])):
+            with col:
+                nm = st.selectbox(f"Tên (cao {i+1})", all_known, index=None,
+                                  placeholder="Chọn yêu quái…", key=f"hi{i}_name")
+                bo = st.segmented_control(f"Bội (cao {i+1})", HIGH_BOI, default=dboi,
+                                          key=f"hi{i}_boi")
+                monsters.append({"name": nm or "", "multiplier": float(bo or dboi)})
+
+        st.subheader("👨‍🏫 Sư Phụ")
+        tc = st.columns([1, 3])
+        with tc[0]:
+            t_mult = st.number_input("Bội Thầy", min_value=13.0, max_value=30.0,
+                                     value=18.0, step=1.0, format="%.0f", key="t_mult")
+        tc[1].caption("Thầy luôn là **Duong_tang** — chỉ cần nhập bội (thường 14–26).")
+        teacher = {"name": "Duong_tang", "multiplier": t_mult}
+
+        submitted = st.form_submit_button("🔮 Dự đoán ngay!", type="primary", width="stretch")
+
+    if submitted:
         from config import canonical_name
         names_norm = [canonical_name(m["name"]) for m in monsters]
-        if not (all(m["name"].strip() for m in monsters) and teacher and teacher["name"].strip()):
-            st.error("Vui lòng điền đầy đủ tên cho tất cả nhân vật!")
+        if not all(m["name"].strip() for m in monsters):
+            st.error("Vui lòng chọn đủ tên cho cả 4 yêu quái!")
         elif len(set(names_norm)) < 4:
             st.error("⚠️ 4 yêu quái phải khác nhau — đang có tên bị trùng.")
         else:
@@ -371,6 +387,12 @@ if active_tab == TAB_LABELS[0]:
     if "pred" in st.session_state:
         st.divider()
         render_prediction(st.session_state["pred"])
+        if st.button("🆕 Nhập trận mới (xoá form)", width="stretch"):
+            for _k in MONSTER_KEYS:
+                st.session_state.pop(_k, None)
+            st.session_state.pop("pred", None)
+            st.session_state.pop("last_round_id", None)
+            st.rerun()
 
 
 # ─── Tab 2: Nhập kết quả ─────────────────────────────────────

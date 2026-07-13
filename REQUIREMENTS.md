@@ -46,7 +46,7 @@ Với mỗi trận, hệ thống trả về:
 - `/cancel` — hủy thao tác.
 
 ### FR5 — Web UI (Streamlit)
-- Tab **Dự đoán**: nhập tay 4 yêu quái + thầy + bội số.
+- Tab **Dự đoán**: nhập tay theo đúng cấu trúc game — **2 yêu quái bội THẤP (3–5) + 2 yêu quái bội CAO (6–12)** + bội Thầy (`Duong_tang` cố định, không cần chọn tên). Bội chọn bằng nút **1 chạm**; toàn bộ gói trong 1 form (chỉ chạy dự đoán khi bấm nút → nhập nhanh, không giật). Có nút **Nhập trận mới** để xoá form nhập trận kế.
 - Tab **Nhập kết quả**: chọn trận đang chờ và ghi nhận người thắng.
 - Tab **Thống kê**: tỷ lệ thắng tổng quát, theo từng nhân vật, và biểu đồ **Odds Calibration** (so sánh tỷ lệ thắng thực tế vs xác suất implied từ bội số).
 - Tab **Lịch sử**: bảng các trận đã ghi.
