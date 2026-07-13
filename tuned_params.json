@@ -3,11 +3,11 @@
   "ODDS_CALIB_STRENGTH": 2,
   "NAME_ODDS_STRENGTH": 10,
   "_meta": {
-    "rounds_evaluated": 164,
-    "roi_ev": 0.7744,
-    "logloss": 1.461,
-    "brier": 0.7371,
-    "top1": 58,
+    "rounds_evaluated": 229,
+    "roi_ev": 0.5459,
+    "logloss": 1.4714,
+    "brier": 0.7402,
+    "top1": 76,
     "optimized_by": "roi_ev"
   }
 }
