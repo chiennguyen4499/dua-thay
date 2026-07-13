@@ -324,37 +324,39 @@ if active_tab == TAB_LABELS[0]:
     MONSTER_KEYS = ("lo0_name", "lo0_boi", "lo1_name", "lo1_boi",
                     "hi0_name", "hi0_boi", "hi1_name", "hi1_boi", "t_mult")
 
-    def _avoid_boi_clash(primary_key, secondary_key, boi_list):
-        """2 con cùng nhóm lỡ chọn trùng bội -> tự đẩy con còn lại sang giá trị khác."""
+    def _avoid_clash(primary_key, secondary_key, options):
+        """2 ô cùng nhóm (tên hoặc bội) lỡ chọn trùng -> tự đẩy ô còn lại sang giá trị khác."""
         p, s = st.session_state.get(primary_key), st.session_state.get(secondary_key)
         if p is not None and p == s:
-            remaining = [b for b in boi_list if b != p]
+            remaining = [o for o in options if o != p]
             if remaining:
                 st.session_state[secondary_key] = remaining[0]
 
     st.subheader("👹 2 con bội THẤP (3–5)")
     cols_lo = st.columns(2)
     with cols_lo[0]:
-        lo0_name = st.selectbox("Tên (thấp 1)", LOW_MONSTERS, index=None,
-                                 placeholder="Chọn yêu quái…", format_func=display_name, key="lo0_name")
+        lo0_name = st.segmented_control("Tên (thấp 1)", LOW_MONSTERS, format_func=display_name,
+                                        key="lo0_name", on_change=_avoid_clash,
+                                        args=("lo0_name", "lo1_name", LOW_MONSTERS))
         lo0_boi = st.segmented_control("Bội (thấp 1)", LOW_BOI, default=5, key="lo0_boi",
-                                       on_change=_avoid_boi_clash, args=("lo0_boi", "lo1_boi", LOW_BOI))
+                                       on_change=_avoid_clash, args=("lo0_boi", "lo1_boi", LOW_BOI))
     with cols_lo[1]:
-        lo1_name = st.selectbox("Tên (thấp 2)", LOW_MONSTERS, index=None,
-                                 placeholder="Chọn yêu quái…", format_func=display_name, key="lo1_name")
+        lo1_name_opts = [m for m in LOW_MONSTERS if m != st.session_state.get("lo0_name")]
+        lo1_name = st.segmented_control("Tên (thấp 2)", lo1_name_opts, format_func=display_name, key="lo1_name")
         lo1_opts = [b for b in LOW_BOI if b != st.session_state.get("lo0_boi")]
         lo1_boi = st.segmented_control("Bội (thấp 2)", lo1_opts, default=3, key="lo1_boi")
 
     st.subheader("👺 2 con bội CAO (6–12)")
     cols_hi = st.columns(2)
     with cols_hi[0]:
-        hi0_name = st.selectbox("Tên (cao 1)", HIGH_MONSTERS, index=None,
-                                 placeholder="Chọn yêu quái…", format_func=display_name, key="hi0_name")
+        hi0_name = st.segmented_control("Tên (cao 1)", HIGH_MONSTERS, format_func=display_name,
+                                        key="hi0_name", on_change=_avoid_clash,
+                                        args=("hi0_name", "hi1_name", HIGH_MONSTERS))
         hi0_boi = st.segmented_control("Bội (cao 1)", HIGH_BOI, default=9, key="hi0_boi",
-                                       on_change=_avoid_boi_clash, args=("hi0_boi", "hi1_boi", HIGH_BOI))
+                                       on_change=_avoid_clash, args=("hi0_boi", "hi1_boi", HIGH_BOI))
     with cols_hi[1]:
-        hi1_name = st.selectbox("Tên (cao 2)", HIGH_MONSTERS, index=None,
-                                 placeholder="Chọn yêu quái…", format_func=display_name, key="hi1_name")
+        hi1_name_opts = [m for m in HIGH_MONSTERS if m != st.session_state.get("hi0_name")]
+        hi1_name = st.segmented_control("Tên (cao 2)", hi1_name_opts, format_func=display_name, key="hi1_name")
         hi1_opts = [b for b in HIGH_BOI if b != st.session_state.get("hi0_boi")]
         hi1_boi = st.segmented_control("Bội (cao 2)", hi1_opts, default=6, key="hi1_boi")
 
