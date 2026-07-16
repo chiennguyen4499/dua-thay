@@ -68,6 +68,11 @@ def _cached_high_odds_appearances(min_odds: int = 9):
     return db.get_high_odds_appearances(min_odds)
 
 
+@st.cache_data(show_spinner=False)
+def _cached_teacher_appearances():
+    return db.get_teacher_appearances()
+
+
 def _bust_data_cache():
     """Gọi ngay sau khi ghi/xóa dữ liệu để các bảng/biểu đồ thống kê load
     lại số liệu mới thay vì trả về cache cũ."""
@@ -77,6 +82,7 @@ def _bust_data_cache():
     _cached_recent_rounds.clear()
     _cached_sa_rounds.clear()
     _cached_high_odds_appearances.clear()
+    _cached_teacher_appearances.clear()
 
 
 @st.cache_data(show_spinner="Đang tính ROI mô hình (leave-one-out, ~chục giây)...")
@@ -263,6 +269,39 @@ def render_prediction(state):
     if st.button("🔄 Dự đoán trận mới", key=f"clear_{round_id}"):
         st.session_state.pop("pred", None)
         st.rerun()
+
+
+def _soi_cau_metrics(apps: list[dict]) -> dict:
+    """Tính chỉ số "soi cầu" cho 1 chuỗi lần xuất hiện đã SẮP THEO THỜI GIAN.
+
+    `apps`: list dict mỗi phần tử có `won` (0/1) + `created_at`. Trả về các chỉ số
+    (đang khan, chu kỳ TB, trạng thái...). Dùng chung cho cả yêu quái (đơn vị = lần
+    ra sân bội≥9) lẫn Thầy (đơn vị = số trận) — chỉ khác cách gọi tên đơn vị bên
+    ngoài, còn công thức giống hệt.
+    """
+    appeared = len(apps)
+    won = sum(a["won"] for a in apps)
+    win_positions = [i for i, a in enumerate(apps) if a["won"]]
+    if win_positions:
+        last = win_positions[-1]
+        drought = appeared - 1 - last        # số lần SAU lần về gần nhất (chưa về lại)
+        last_win_date = apps[last]["created_at"][:10]
+    else:
+        drought = appeared                   # chưa từng về -> khan = toàn bộ
+        last_win_date = None
+    avg_cycle = appeared / won if won else None   # trung bình bao nhiêu lần thì về 1
+    if won == 0:
+        status = "❓ chưa từng về"
+    elif drought >= avg_cycle:
+        status = "🔥 quá hạn"
+    elif drought >= 0.7 * avg_cycle:
+        status = "🟡 tới hạn"
+    else:
+        status = "⚪ bình thường"
+    return {
+        "appeared": appeared, "won": won, "drought": drought,
+        "avg_cycle": avg_cycle, "last_win_date": last_win_date, "status": status,
+    }
 
 
 # `st.tabs` chạy code của CẢ 5 tab trên mọi rerun (kể cả tab không hiển thị,
@@ -812,11 +851,11 @@ elif active_tab == TAB_LABELS[2]:
 # ─── Tab 4: Soi cầu ──────────────────────────────────────────
 
 elif active_tab == TAB_LABELS[3]:
-    st.header("🎯 Soi cầu — con lâu chưa về (bội cao)")
+    st.header("🎯 Soi cầu — lâu chưa về")
     st.caption(
-        "Kiểu soi cầu xổ số: thống kê các yêu quái **bội cao (≥9)** đã lâu chưa "
-        "**về đích** (thắng), và **trung bình quá khứ bao lâu mới về 1 lần**. "
-        "Chỉ tính những lần con đó ra sân ở **bội ≥ 9**."
+        "Kiểu soi cầu xổ số: thống kê **yêu quái bội cao (≥9)** và **Thầy** đã lâu "
+        "chưa **về đích / thoát**, và **trung bình quá khứ bao lâu mới về 1 lần**. "
+        "Yêu quái chỉ tính lần ra sân ở **bội ≥ 9**; Thầy tính **mọi trận** (bội 14–26)."
     )
     st.warning(
         "⚠️ Đây là soi cầu theo kiểu xổ số (**gambler's fallacy**): game vốn ngẫu "
@@ -842,56 +881,44 @@ elif active_tab == TAB_LABELS[3]:
     elif scope == "Chỉ bội 10–12":
         appearances = [a for a in appearances if a["odds"] >= 10]
 
-    if not appearances:
+    def _row(label, apps):
+        m = _soi_cau_metrics(apps)
+        return {
+            "Nhân vật": label,
+            "Xuất hiện": m["appeared"],
+            "Về": m["won"],
+            "Tỉ lệ về": m["won"] / m["appeared"] if m["appeared"] else 0.0,
+            "Đang khan": m["drought"],
+            "Chu kỳ TB": round(m["avg_cycle"], 1) if m["avg_cycle"] else None,
+            "Lần về gần nhất": m["last_win_date"] or "— chưa từng về",
+            "Trạng thái": m["status"],
+        }
+
+    # ── Thầy: trường hợp ĐẶC BIỆT — có mặt MỌI trận, bội ở thang riêng (14–26),
+    # nên KHÔNG áp bộ lọc bội≥9 lẫn ngưỡng mẫu; đơn vị của Thầy là SỐ TRẬN.
+    teacher_apps = _cached_teacher_appearances()
+    teacher_row = _row("👨‍🏫 Thầy (Duong_tang)", teacher_apps) if teacher_apps else None
+
+    if not appearances and not teacher_row:
         st.info("Chưa có dữ liệu cho phạm vi bội này.")
     else:
-        # Gom theo tên, giữ thứ tự thời gian (query đã ORDER BY round_id).
+        # Gom yêu quái theo tên, giữ thứ tự thời gian (query đã ORDER BY round_id).
         from collections import defaultdict
         by_name = defaultdict(list)
         for a in appearances:
             by_name[a["name"]].append(a)
 
-        rows = []
-        for name, apps in by_name.items():
-            appeared = len(apps)
-            if appeared < min_app:
-                continue
-            won = sum(a["won"] for a in apps)
-            win_positions = [i for i, a in enumerate(apps) if a["won"]]
-            if win_positions:
-                last_win_pos = win_positions[-1]
-                drought = appeared - 1 - last_win_pos   # số lần ra sân SAU lần về gần nhất
-                last_win_date = apps[last_win_pos]["created_at"][:10]
-            else:
-                drought = appeared                       # chưa từng về -> khan = toàn bộ
-                last_win_date = None
-            avg_cycle = appeared / won if won else None  # ~ số lần ra sân / 1 lần về
+        monster_rows = [_row(display_name(name), apps)
+                        for name, apps in by_name.items() if len(apps) >= min_app]
+        # Lâu chưa về nhất lên đầu; đồng hạng thì nhiều mẫu hơn trước.
+        monster_rows.sort(key=lambda r: (r["Đang khan"], r["Xuất hiện"]), reverse=True)
 
-            if won == 0:
-                status = "❓ chưa từng về"
-            elif drought >= avg_cycle:
-                status = "🔥 quá hạn"
-            elif drought >= 0.7 * avg_cycle:
-                status = "🟡 tới hạn"
-            else:
-                status = "⚪ bình thường"
-
-            rows.append({
-                "Yêu quái": display_name(name),
-                "Xuất hiện": appeared,
-                "Về": won,
-                "Tỉ lệ về": won / appeared,
-                "Đang khan": drought,
-                "Chu kỳ TB": round(avg_cycle, 1) if avg_cycle else None,
-                "Lần về gần nhất": last_win_date or "— chưa từng về",
-                "Trạng thái": status,
-            })
+        # Thầy luôn đứng đầu bảng (đơn vị khác nên tách ý nghĩa, không trộn thứ hạng).
+        rows = ([teacher_row] if teacher_row else []) + monster_rows
 
         if not rows:
             st.info(f"Không con nào đạt tối thiểu {min_app} lần xuất hiện trong phạm vi này.")
         else:
-            # Lâu chưa về nhất lên đầu; đồng hạng thì nhiều mẫu hơn trước.
-            rows.sort(key=lambda r: (r["Đang khan"], r["Xuất hiện"]), reverse=True)
             df = pd.DataFrame(rows)
             st.dataframe(
                 df, width="stretch", hide_index=True,
@@ -899,24 +926,32 @@ elif active_tab == TAB_LABELS[3]:
                     "Tỉ lệ về": st.column_config.ProgressColumn(
                         "Tỉ lệ về", format="percent", min_value=0.0, max_value=1.0),
                     "Đang khan": st.column_config.NumberColumn(
-                        "Đang khan", help="Số lần ra sân (bội≥9) liên tiếp gần đây CHƯA về"),
+                        "Đang khan", help="Yêu quái: số lần ra sân (bội≥9) liên tiếp chưa về. "
+                                          "Thầy: số TRẬN liên tiếp chưa thoát."),
                     "Chu kỳ TB": st.column_config.NumberColumn(
-                        "Chu kỳ TB", help="Trung bình cứ bao nhiêu lần ra sân thì về 1 lần"),
+                        "Chu kỳ TB", help="Trung bình cứ bao nhiêu lần (yêu quái: ra sân bội≥9 · "
+                                          "Thầy: trận) thì về/thoát 1 lần"),
                 },
             )
-            hot = [r["Yêu quái"] for r in rows if r["Trạng thái"] == "🔥 quá hạn"]
+            st.caption("👨‍🏫 **Thầy đứng đầu bảng** vì đơn vị khác: Thầy có mặt **mọi trận** "
+                       "(bội 14–26) nên Xuất hiện/Đang khan/Chu kỳ của Thầy tính theo **số trận**; "
+                       "còn yêu quái tính theo **số lần ra sân ở bội≥9**. Bộ lọc bội chỉ tác động yêu quái.")
+            hot = [r["Nhân vật"] for r in rows if r["Trạng thái"] == "🔥 quá hạn"]
             if hot:
                 st.info("🔥 **Đang quá hạn (khan ≥ chu kỳ TB):** " + ", ".join(hot))
 
         with st.expander("ℹ️ Cách đọc các cột"):
             st.markdown(
-                "- **Xuất hiện / Về:** số lần con đó ra sân ở bội ≥ 9 / trong đó về đích mấy lần.\n"
-                "- **Đang khan:** số lần ra sân gần đây **liên tiếp chưa về** (kể từ sau lần về gần nhất). "
+                "- **Xuất hiện / Về:** yêu quái = số lần ra sân ở bội ≥ 9 / về đích mấy lần; "
+                "Thầy = số trận / số lần thoát.\n"
+                "- **Đang khan:** số lần gần đây **liên tiếp chưa về/thoát** (kể từ sau lần gần nhất). "
                 "Càng lớn = càng lâu chưa về.\n"
-                "- **Chu kỳ TB:** trung bình quá khứ cứ **bao nhiêu lần ra sân thì về 1 lần** "
+                "- **Chu kỳ TB:** trung bình quá khứ cứ **bao nhiêu lần thì về/thoát 1 lần** "
                 "(= Xuất hiện ÷ Về). Ví dụ 5 nghĩa là trung bình ~5 lần mới về 1.\n"
                 "- **Trạng thái:** 🔥 quá hạn (Đang khan ≥ Chu kỳ TB) · 🟡 tới hạn (≥ 70% chu kỳ) · "
-                "⚪ bình thường · ❓ chưa từng về."
+                "⚪ bình thường · ❓ chưa từng về.\n"
+                "- **👨‍🏫 Thầy** là trường hợp đặc biệt: có mặt mọi trận, bội thang riêng (14–26) → "
+                "không lọc theo bội≥9, đơn vị tính theo **số trận**."
             )
 
 

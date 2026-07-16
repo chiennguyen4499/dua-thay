@@ -439,6 +439,27 @@ def get_high_odds_appearances(min_odds: int = 9) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_teacher_appearances() -> list[dict]:
+    """Chuỗi xuất hiện của Thầy theo thứ tự thời gian — dùng cho "soi cầu".
+
+    Thầy là trường hợp đặc biệt: xuất hiện MỌI trận (không lọc bội như yêu quái)
+    và bội của Thầy nằm ở thang khác (14–26). Mỗi record 1 trận, kèm `won` (Thầy
+    thoát chưa) + `odds` (bội Thầy trận đó) + `round_id`/`created_at`. Đơn vị "đang
+    khan"/"chu kỳ" của Thầy vì thế là SỐ TRẬN (mỗi trận Thầy đều có mặt).
+
+    Trả về list dict: {round_id, created_at, name, odds, won}.
+    """
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT id AS round_id, created_at, teacher_name AS name,
+                   CAST(ROUND(teacher_multiplier) AS INTEGER) AS odds,
+                   CASE WHEN winner='teacher' THEN 1 ELSE 0 END AS won
+            FROM rounds WHERE winner IS NOT NULL
+            ORDER BY round_id
+        """).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_teacher_odds_winrate() -> dict[int, dict]:
     """Tỷ lệ thoát của Thầy theo từng giá trị bội. {odds_int: {appeared, won}}.
 
