@@ -63,6 +63,11 @@ def _cached_sa_rounds():
     return sa.load_rounds()
 
 
+@st.cache_data(show_spinner=False)
+def _cached_high_odds_appearances(min_odds: int = 9):
+    return db.get_high_odds_appearances(min_odds)
+
+
 def _bust_data_cache():
     """Gọi ngay sau khi ghi/xóa dữ liệu để các bảng/biểu đồ thống kê load
     lại số liệu mới thay vì trả về cache cũ."""
@@ -71,6 +76,7 @@ def _bust_data_cache():
     _cached_odds_calibration_data.clear()
     _cached_recent_rounds.clear()
     _cached_sa_rounds.clear()
+    _cached_high_odds_appearances.clear()
 
 
 @st.cache_data(show_spinner="Đang tính ROI mô hình (leave-one-out, ~chục giây)...")
@@ -268,6 +274,7 @@ TAB_LABELS = [
     "🔮 Dự đoán",
     "📝 Nhập kết quả",
     "📊 Thống kê",
+    "🎯 Soi cầu",
     "📋 Lịch sử",
 ]
 active_tab = st.radio("Chọn mục:", TAB_LABELS, horizontal=True, label_visibility="collapsed")
@@ -802,9 +809,120 @@ elif active_tab == TAB_LABELS[2]:
             st.rerun()
 
 
-# ─── Tab 4: Lịch sử ──────────────────────────────────────────
+# ─── Tab 4: Soi cầu ──────────────────────────────────────────
 
 elif active_tab == TAB_LABELS[3]:
+    st.header("🎯 Soi cầu — con lâu chưa về (bội cao)")
+    st.caption(
+        "Kiểu soi cầu xổ số: thống kê các yêu quái **bội cao (≥9)** đã lâu chưa "
+        "**về đích** (thắng), và **trung bình quá khứ bao lâu mới về 1 lần**. "
+        "Chỉ tính những lần con đó ra sân ở **bội ≥ 9**."
+    )
+    st.warning(
+        "⚠️ Đây là soi cầu theo kiểu xổ số (**gambler's fallacy**): game vốn ngẫu "
+        "nhiên, con \"quá hạn\" **KHÔNG** chắc chắn lần tới sẽ về. Chỉ để tham khảo.",
+        icon="⚠️",
+    )
+
+    # Bội là BỘ LỌC phạm vi (không tách bảng theo tên×bội — 255 trận chia 36 ô
+    # quá thưa để "chu kỳ về" có nghĩa). Luôn gom theo TÊN trong phạm vi đã lọc.
+    c_scope, c_min = st.columns([3, 2])
+    scope = c_scope.radio(
+        "Phạm vi bội:",
+        ["Gộp bội 9–12", "Chỉ bội 9", "Chỉ bội 10–12"],
+        horizontal=True,
+        help="Bội 9 thường là tín hiệu thật; bội 10 lịch sử tệ nhất. Tách ra để soi cho đúng.",
+    )
+    min_app = c_min.slider("Số lần xuất hiện tối thiểu:", 1, 15, 3,
+                           help="Ẩn các con quá ít mẫu để tránh nhiễu.")
+
+    appearances = _cached_high_odds_appearances(9)
+    if scope == "Chỉ bội 9":
+        appearances = [a for a in appearances if a["odds"] == 9]
+    elif scope == "Chỉ bội 10–12":
+        appearances = [a for a in appearances if a["odds"] >= 10]
+
+    if not appearances:
+        st.info("Chưa có dữ liệu cho phạm vi bội này.")
+    else:
+        # Gom theo tên, giữ thứ tự thời gian (query đã ORDER BY round_id).
+        from collections import defaultdict
+        by_name = defaultdict(list)
+        for a in appearances:
+            by_name[a["name"]].append(a)
+
+        rows = []
+        for name, apps in by_name.items():
+            appeared = len(apps)
+            if appeared < min_app:
+                continue
+            won = sum(a["won"] for a in apps)
+            win_positions = [i for i, a in enumerate(apps) if a["won"]]
+            if win_positions:
+                last_win_pos = win_positions[-1]
+                drought = appeared - 1 - last_win_pos   # số lần ra sân SAU lần về gần nhất
+                last_win_date = apps[last_win_pos]["created_at"][:10]
+            else:
+                drought = appeared                       # chưa từng về -> khan = toàn bộ
+                last_win_date = None
+            avg_cycle = appeared / won if won else None  # ~ số lần ra sân / 1 lần về
+
+            if won == 0:
+                status = "❓ chưa từng về"
+            elif drought >= avg_cycle:
+                status = "🔥 quá hạn"
+            elif drought >= 0.7 * avg_cycle:
+                status = "🟡 tới hạn"
+            else:
+                status = "⚪ bình thường"
+
+            rows.append({
+                "Yêu quái": display_name(name),
+                "Xuất hiện": appeared,
+                "Về": won,
+                "Tỉ lệ về": won / appeared,
+                "Đang khan": drought,
+                "Chu kỳ TB": round(avg_cycle, 1) if avg_cycle else None,
+                "Lần về gần nhất": last_win_date or "— chưa từng về",
+                "Trạng thái": status,
+            })
+
+        if not rows:
+            st.info(f"Không con nào đạt tối thiểu {min_app} lần xuất hiện trong phạm vi này.")
+        else:
+            # Lâu chưa về nhất lên đầu; đồng hạng thì nhiều mẫu hơn trước.
+            rows.sort(key=lambda r: (r["Đang khan"], r["Xuất hiện"]), reverse=True)
+            df = pd.DataFrame(rows)
+            st.dataframe(
+                df, width="stretch", hide_index=True,
+                column_config={
+                    "Tỉ lệ về": st.column_config.ProgressColumn(
+                        "Tỉ lệ về", format="percent", min_value=0.0, max_value=1.0),
+                    "Đang khan": st.column_config.NumberColumn(
+                        "Đang khan", help="Số lần ra sân (bội≥9) liên tiếp gần đây CHƯA về"),
+                    "Chu kỳ TB": st.column_config.NumberColumn(
+                        "Chu kỳ TB", help="Trung bình cứ bao nhiêu lần ra sân thì về 1 lần"),
+                },
+            )
+            hot = [r["Yêu quái"] for r in rows if r["Trạng thái"] == "🔥 quá hạn"]
+            if hot:
+                st.info("🔥 **Đang quá hạn (khan ≥ chu kỳ TB):** " + ", ".join(hot))
+
+        with st.expander("ℹ️ Cách đọc các cột"):
+            st.markdown(
+                "- **Xuất hiện / Về:** số lần con đó ra sân ở bội ≥ 9 / trong đó về đích mấy lần.\n"
+                "- **Đang khan:** số lần ra sân gần đây **liên tiếp chưa về** (kể từ sau lần về gần nhất). "
+                "Càng lớn = càng lâu chưa về.\n"
+                "- **Chu kỳ TB:** trung bình quá khứ cứ **bao nhiêu lần ra sân thì về 1 lần** "
+                "(= Xuất hiện ÷ Về). Ví dụ 5 nghĩa là trung bình ~5 lần mới về 1.\n"
+                "- **Trạng thái:** 🔥 quá hạn (Đang khan ≥ Chu kỳ TB) · 🟡 tới hạn (≥ 70% chu kỳ) · "
+                "⚪ bình thường · ❓ chưa từng về."
+            )
+
+
+# ─── Tab 5: Lịch sử ──────────────────────────────────────────
+
+elif active_tab == TAB_LABELS[4]:
     st.header("Lịch sử trận đấu")
 
     all_rounds = _cached_recent_rounds(200)

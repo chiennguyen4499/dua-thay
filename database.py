@@ -401,6 +401,44 @@ def get_monster_odds_winrate() -> dict[int, dict]:
     return {r["odds"]: {"appeared": r["appeared"], "won": r["won"] or 0} for r in rows}
 
 
+def get_high_odds_appearances(min_odds: int = 9) -> list[dict]:
+    """Mọi LẦN XUẤT HIỆN của yêu quái ở bội >= min_odds, theo thứ tự thời gian.
+
+    Dùng cho "soi cầu": mỗi record là 1 lần 1 con ra sân ở bội cao, kèm `won`
+    (con đó về đích trận đó chưa) và `round_id`/`created_at` để tính khoảng cách
+    giữa các lần về. Gộp 4 slot yêu quái trong 1 query (1 round-trip Turso), sắp
+    theo id (thứ tự trận) để phía Python tính "đang khan" & "chu kỳ về".
+
+    Trả về list dict: {round_id, created_at, name, odds, won}.
+    """
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT round_id, created_at, name,
+                   CAST(ROUND(odds) AS INTEGER) AS odds, won
+            FROM (
+                SELECT id AS round_id, created_at, monster1_name AS name,
+                       monster1_multiplier AS odds,
+                       CASE WHEN winner='monster1' THEN 1 ELSE 0 END AS won
+                FROM rounds WHERE winner IS NOT NULL
+                UNION ALL
+                SELECT id, created_at, monster2_name, monster2_multiplier,
+                       CASE WHEN winner='monster2' THEN 1 ELSE 0 END
+                FROM rounds WHERE winner IS NOT NULL
+                UNION ALL
+                SELECT id, created_at, monster3_name, monster3_multiplier,
+                       CASE WHEN winner='monster3' THEN 1 ELSE 0 END
+                FROM rounds WHERE winner IS NOT NULL
+                UNION ALL
+                SELECT id, created_at, monster4_name, monster4_multiplier,
+                       CASE WHEN winner='monster4' THEN 1 ELSE 0 END
+                FROM rounds WHERE winner IS NOT NULL
+            )
+            WHERE odds >= ?
+            ORDER BY round_id
+        """, (min_odds,)).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_teacher_odds_winrate() -> dict[int, dict]:
     """Tỷ lệ thoát của Thầy theo từng giá trị bội. {odds_int: {appeared, won}}.
 
