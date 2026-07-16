@@ -46,7 +46,7 @@ Với mỗi trận, hệ thống trả về:
 - `/cancel` — hủy thao tác.
 
 ### FR5 — Web UI (Streamlit)
-- Tab **Dự đoán**: nhập tay theo đúng cấu trúc game — **2 yêu quái bội THẤP (3–5) + 2 yêu quái bội CAO (6–12)** + bội Thầy (`Duong_tang` cố định, không cần chọn tên). Cả **tên lẫn bội đều chọn bằng nút 1 chạm** (không dropdown) — mỗi nhóm chỉ gợi ý đúng các con thuộc dải bội đó (9 con bội thấp cố định: Bạch tượng, Thanh ngưu, Lộc đại tiên, Đại bàng kim sí, Hồng hài nhi, Lão bản, Thanh sư, Xích vỹ ma hạt, Hoàng mi vương — 9 con còn lại là bội cao), và không cho chọn trùng tên/trùng bội trong cùng nhóm. Có nút **Nhập trận mới** để xoá lựa chọn, nhập trận kế nhanh. (Không còn tiêu đề lớn ở đầu trang để đỡ chiếm diện tích.)
+- Tab **Dự đoán**: nhập tay theo đúng cấu trúc game — **2 yêu quái bội THẤP (3–5) + 2 yêu quái bội CAO (6–12)** + bội Thầy (`Duong_tang` cố định, không cần chọn tên). Cả **tên lẫn bội đều chọn bằng nút 1 chạm** (không dropdown) — mỗi nhóm chỉ gợi ý đúng các con thuộc dải bội đó (9 con bội thấp cố định, xếp theo ABC: Bạch tượng, Đại bàng kim sí, Hoàng mi vương, Hồng hài nhi, Lão bản, Lộc đại tiên, Thanh ngưu, Thanh sư, Xích vỹ ma hạt — 9 con còn lại là bội cao, cũng xếp ABC), và không cho chọn trùng tên/trùng bội trong cùng nhóm. Có nút **Nhập trận mới** để xoá lựa chọn, nhập trận kế nhanh. (Không còn tiêu đề lớn ở đầu trang để đỡ chiếm diện tích.)
 - Tab **Nhập kết quả**: chọn trận đang chờ và ghi nhận người thắng.
 - Tab **Thống kê**: tỷ lệ thắng tổng quát, theo từng nhân vật, và biểu đồ **Odds Calibration** (so sánh tỷ lệ thắng thực tế vs xác suất implied từ bội số).
 - Tab **Lịch sử**: bảng các trận đã ghi.
