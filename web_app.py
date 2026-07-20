@@ -279,33 +279,36 @@ def render_prediction(state):
         st.warning("⚠️ Dữ liệu còn ít hoặc các lựa chọn quá sát nhau. Game ngẫu nhiên cao "
                    "— hãy coi là tham khảo, đừng cược nặng.")
 
-    # Khuyến nghị — ưu tiên EV (value betting)
+    # ── KÈO NÊN ĐÁNH (luật game: tối đa 2 con/trận) ──────────────────
+    # Chỉ gợi ý con nằm trên giá trị bội đã chứng minh +EV chắc (thực tế: bội
+    # 5 & 9). Con bội cao/Thầy "EV đẹp trên giấy" đã bị lọc bỏ (dễ thua chuỗi).
     rec = prediction["recommendation"]
-    ev_rec = prediction["best_value"]
-    col1, col2 = st.columns(2)
-    with col1:
-        if ev_rec["expected_value"] > 1.05:
-            _rng = ""
-            if ev_rec.get("ev_low") is not None:
-                _rng = (f"\n\nKhoảng khả dĩ: EV **{ev_rec['ev_low']:.2f}–{ev_rec['ev_high']:.2f}** · "
-                        f"thắng {ev_rec['prob_low']*100:.0f}–{ev_rec['prob_high']*100:.0f}%")
-            st.success(f"💰 **Kèo giá trị (ưu tiên)**\n\n"
-                       f"### {display_name(ev_rec['name'])}\n"
-                       f"**{ev_rec['multiplier']:g}x** · EV **{ev_rec['expected_value']:.2f}** · "
-                       f"thắng ~{ev_rec['probability']*100:.0f}%{_rng}")
-            _stake = ev_rec.get("stake_fraction", 0) or 0
-            if _stake > 0:
-                st.caption(f"💵 Mức cược gợi ý: **~{_stake*100:.1f}% vốn** (¼-Kelly, trần 5%). "
-                           "Thắng ít, trả cao → variance lớn.")
-            else:
-                st.caption("⚠️ Lợi thế mỏng → cược rất nhẹ hoặc bỏ qua.")
+    pair = prediction.get("bet_pair", [])
+    if pair:
+        st.markdown(f"### 🎯 Nên đánh {len(pair)} con (luật cược 2)")
+        pcols = st.columns(len(pair))
+        for pc, b in zip(pcols, pair):
+            _stake = b.get("stake_fraction", 0) or 0
+            _stake_str = (f"💵 ~{_stake*100:.1f}% vốn" if _stake > 0
+                          else "💵 lợi thế mỏng, cược nhẹ")
+            pc.success(
+                f"**{display_name(b['name'])}**\n\n"
+                f"### {b['multiplier']:g}x\n"
+                f"EV **{b['expected_value']:.2f}** · thắng ~{b['probability']*100:.0f}%\n\n"
+                f"{_stake_str}"
+            )
+        if len(pair) == 2:
+            st.caption("✅ Cược CẢ 2 con: thắng nếu 1 trong 2 về — thắng thường "
+                       "xuyên hơn, ít chuỗi thua dài (dữ liệu: cặp favorite ~72%).")
         else:
-            st.warning(f"💰 **Không có kèo +EV nổi bật**\n\n"
-                       f"EV tốt nhất chỉ **{ev_rec['expected_value']:.2f}** (<1) → cân nhắc **bỏ qua** trận.")
-    with col2:
-        st.info(f"🛡 **Kèo an toàn**\n\n"
-                f"### {display_name(rec['name'])}\n"
-                f"**{rec['multiplier']:g}x** · {rec['probability']*100:.0f}% _(ROI dài hạn thường âm)_")
+            st.caption("Chỉ 1 con đủ tin ở trận này. Con thứ 2 (bội cao/Thầy) "
+                       "không đủ bằng chứng +EV → không nên cược thêm.")
+    else:
+        st.warning("🚫 **Không nên cược trận này** — không có con nào nằm trên bội "
+                   "đã chứng minh +EV (bội 5 hoặc 9). Các lựa chọn còn lại (bội cao, "
+                   "Thầy) EV đẹp trên giấy nhưng thực tế lỗ. Để vốn trống > cược ép.")
+    st.caption(f"🛡 Xác suất cao nhất (tham khảo): **{display_name(rec['name'])}** "
+               f"{rec['multiplier']:g}x · {rec['probability']*100:.0f}%.")
 
     # Bảng chi tiết + biểu đồ
     probs = prediction["probabilities"]

@@ -288,6 +288,38 @@ def _build_result(monsters, teacher, probs, method, sample_count, details, messa
     p_lo, p_hi = _wilson_ci(ev_p, ev_n) if ev_n > 0 else (None, None)
     kelly = _kelly_fraction(ev_p, ev_mult)
 
+    # ── Cặp kèo NÊN ĐÁNH (luật game: tối đa 2 con/trận) ──────────────
+    # CHẶN mô hình đuổi kèo Thầy/bội cao "EV đẹp trên giấy": chỉ nhận nhân vật
+    # nằm trên GIÁ TRỊ BỘI đã chứng minh +EV — tiêu chí data-driven: cận DƯỚI CI
+    # Wilson của win-rate tầng bội đó × bội > 1 (tức +EV cả ở kịch bản bi quan),
+    # và tầng đủ mẫu. Với data hiện tại chỉ bội 5 & 9 qua cổng này; Thầy và bội
+    # 10/11/12 bị loại (win-rate cận dưới quá thấp so với bội). Tự nới khi data
+    # tăng: nếu một bội khác tích đủ thắng, nó sẽ tự lọt vào.
+    trusted = {}
+    for name in probs:
+        d = details.get(name, {})
+        n_tier = d.get("odds_appeared", 0) or 0
+        wr = d.get("odds_win_rate")
+        o = odds_map.get(name, 1.0)
+        if n_tier >= 10 and wr is not None:
+            wr_lo, _ = _wilson_ci(wr, n_tier)
+            # Biên 1.05: đòi lợi thế RÕ (≥5%) cả ở kịch bản bi quan, không nhận
+            # tier hòa vốn (vd bội 4 ~1.0, hay về nhưng ăn ké dải bội 5).
+            trusted[name] = (wr_lo * o) > 1.05
+        else:
+            trusted[name] = False
+
+    def _bet_entry(name):
+        m = odds_map.get(name, 1.0)
+        p = probs[name]
+        return {"name": name, "multiplier": m, "probability": p,
+                "expected_value": p * m, "stake_fraction": _kelly_fraction(p, m)}
+
+    # Ưu tiên FAVORITE (bội thấp trước = bội 5 trước bội 9) — data cho thấy cược
+    # 2 favorite thắng ~72% (variance thấp), tốt hơn đuổi EV cao/variance cao.
+    trusted_names = sorted([n for n in probs if trusted[n]], key=lambda n: odds_map[n])
+    bet_pair = [_bet_entry(n) for n in trusted_names[:2]]
+
     return {
         "method": method,
         "sample_count": sample_count,
@@ -314,6 +346,10 @@ def _build_result(monsters, teacher, probs, method, sample_count, details, messa
             # Mức cược gợi ý (¼-Kelly, trần 5% vốn); 0 nếu không có lợi thế.
             "stake_fraction": kelly,
         },
+        # Cặp NÊN ĐÁNH (tối đa 2 con, đã lọc chỉ bội +EV đáng tin, favorite trước).
+        # Rỗng = không con nào đủ tin → nên bỏ trận.
+        "bet_pair": bet_pair,
+        "trusted": trusted,
         "message": message,
     }
 
@@ -371,35 +407,29 @@ def format_prediction_text(pred: dict, monsters: list[dict], teacher: dict) -> s
         )
 
     rec = pred["recommendation"]
-    ev = pred["best_value"]
+    pair = pred.get("bet_pair", [])
 
-    lines.append("\n─── Khuyến nghị (ưu tiên EV) ───")
-    if ev["expected_value"] > 1.05:
-        lines.append(
-            f"💰 *Kèo giá trị*: {display_name(ev['name'])} ({ev['multiplier']:g}x) — "
-            f"EV={ev['expected_value']:.2f}, thắng ~{ev['probability']*100:.1f}%"
-        )
-        if ev.get("ev_low") is not None:
+    lines.append("\n─── Nên đánh (luật cược 2 con) ───")
+    if pair:
+        for b in pair:
+            stake = b.get("stake_fraction", 0) or 0
+            stake_str = (f" · cược ~{stake*100:.1f}% vốn" if stake > 0 else " · cược nhẹ")
             lines.append(
-                f"   _Khoảng khả dĩ: EV {ev['ev_low']:.2f}–{ev['ev_high']:.2f} · "
-                f"thắng {ev['prob_low']*100:.0f}–{ev['prob_high']*100:.0f}%_"
+                f"🎯 *{display_name(b['name'])}* ({b['multiplier']:g}x) — "
+                f"EV {b['expected_value']:.2f}, thắng ~{b['probability']*100:.0f}%{stake_str}"
             )
-        stake = ev.get("stake_fraction", 0) or 0
-        if stake > 0:
-            lines.append(
-                f"   💵 _Mức cược gợi ý: ~{stake*100:.1f}% vốn (¼-Kelly, trần 5%) — "
-                f"EV>1 lời dài hạn nhưng variance cao._"
-            )
+        if len(pair) == 2:
+            lines.append("   _Cược CẢ 2: thắng nếu 1 trong 2 về — ít chuỗi thua (cặp favorite ~72%)._")
         else:
-            lines.append("   _EV>1 nhưng lợi thế mỏng → cược rất nhẹ hoặc bỏ qua._")
+            lines.append("   _Chỉ 1 con đủ tin; con còn lại (bội cao/Thầy) không đủ bằng chứng +EV._")
     else:
         lines.append(
-            f"💰 _Không có kèo +EV nổi bật (EV tốt nhất chỉ {ev['expected_value']:.2f}). "
-            f"Cân nhắc bỏ qua trận này._"
+            "🚫 _Không nên cược trận này — không có con nào ở bội đã chứng minh +EV "
+            "(5 hoặc 9). Bội cao/Thầy EV đẹp trên giấy nhưng thực tế lỗ. Bỏ trận._"
         )
     lines.append(
-        f"🛡 Kèo an toàn (xác suất cao nhất): {display_name(rec['name'])} — "
-        f"{rec['probability']*100:.1f}% _(ROI dài hạn thường âm)_"
+        f"🛡 _Xác suất cao nhất (tham khảo): {display_name(rec['name'])} "
+        f"{rec['probability']*100:.0f}%._"
     )
 
     lines.append(f"\n💬 _{pred['message']}_")
