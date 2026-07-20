@@ -17,11 +17,9 @@ Metric:
 """
 
 import math
-import tempfile
-import os
 
-import config
 import database as db
+import predictor
 
 
 def _reconstruct(row):
@@ -53,13 +51,6 @@ def run_backtest(min_history: int = 10):
         print(f"Chi co {len(real_rounds)} tran, can > {min_history} de backtest.")
         return
 
-    # 2. DB tam de replay
-    tmp_path = tempfile.mktemp(suffix=".db")
-    orig_path = db.DATABASE_PATH
-    db.DATABASE_PATH = tmp_path
-    import predictor  # import sau khi co the doc DATABASE_PATH qua db.* (predictor goi qua db)
-    db.init_db()
-
     stats = {
         "MODEL":   {"logloss": 0.0, "brier": 0.0, "top1": 0, "pwin": 0.0},
         "ODDS":    {"logloss": 0.0, "brier": 0.0, "top1": 0, "pwin": 0.0},
@@ -68,43 +59,35 @@ def run_backtest(min_history: int = 10):
     method_count = {}
     n_eval = 0
 
-    try:
-        for row in real_rounds:
-            monsters, teacher, winner_name = _reconstruct(row)
-            prior_n = db.get_total_rounds_with_winner()
+    # Walk-forward THUAN PYTHON: du doan tran thu i CHI bang cac tran TRUOC do
+    # (real_rounds[:i]). Khong con DB tam / trao DATABASE_PATH.
+    for i, row in enumerate(real_rounds):
+        monsters, teacher, winner_name = _reconstruct(row)
+        history = real_rounds[:i]
 
-            if prior_n >= min_history:
-                n_eval += 1
+        if len(history) >= min_history:
+            n_eval += 1
 
-                model = predictor.predict(monsters, teacher)
-                p_model = model["probabilities"]
-                method_count[model["method"]] = method_count.get(model["method"], 0) + 1
+            model = predictor.predict(monsters, teacher, history)
+            p_model = model["probabilities"]
+            method_count[model["method"]] = method_count.get(model["method"], 0) + 1
 
-                p_odds = _odds_probs(monsters, teacher)
-                names = list(p_odds.keys())
-                p_unif = {k: 1.0 / len(names) for k in names}
+            p_odds = _odds_probs(monsters, teacher)
+            names = list(p_odds.keys())
+            p_unif = {k: 1.0 / len(names) for k in names}
 
-                for tag, P in (("MODEL", p_model), ("ODDS", p_odds), ("UNIFORM", p_unif)):
-                    pw = max(P.get(winner_name, 1e-9), 1e-9)
-                    stats[tag]["logloss"] += -math.log(pw)
-                    stats[tag]["pwin"] += pw
-                    # Brier multiclass
-                    stats[tag]["brier"] += sum(
-                        (P.get(n, 0.0) - (1.0 if n == winner_name else 0.0)) ** 2
-                        for n in names
-                    )
-                    pred_name = max(P, key=P.get)
-                    if pred_name == winner_name:
-                        stats[tag]["top1"] += 1
-
-            # Sau khi du doan, nap tran nay vao DB tam de tran sau "thay" no
-            db.save_round(monsters, teacher, winner=row["winner"], source="backtest")
-    finally:
-        db.DATABASE_PATH = orig_path
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+            for tag, P in (("MODEL", p_model), ("ODDS", p_odds), ("UNIFORM", p_unif)):
+                pw = max(P.get(winner_name, 1e-9), 1e-9)
+                stats[tag]["logloss"] += -math.log(pw)
+                stats[tag]["pwin"] += pw
+                # Brier multiclass
+                stats[tag]["brier"] += sum(
+                    (P.get(n, 0.0) - (1.0 if n == winner_name else 0.0)) ** 2
+                    for n in names
+                )
+                pred_name = max(P, key=P.get)
+                if pred_name == winner_name:
+                    stats[tag]["top1"] += 1
 
     # 3. Bao cao
     print("=" * 60)

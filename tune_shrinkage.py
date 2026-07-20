@@ -19,7 +19,7 @@ Logloss on dinh hon nhieu va la thuoc do calibration truc tiep.
 du day den muc o (ten x boi) co tin hieu that, logloss cua name_odds_k>0 se
 tu thap hon va tang nay TU DONG duoc bat. Khong can sua tay.
 """
-import os, math, json, random, tempfile, importlib
+import os, math, json, random, importlib
 
 PARAMS_FILE = os.path.join(os.path.dirname(__file__), "tuned_params.json")
 
@@ -38,37 +38,30 @@ def eval_combo(ind_k, odds_k, name_odds_k, real, min_history=10):
     # Tranh tuned_params.json ghi de luc dang quet (xem config.py).
     os.environ["IGNORE_TUNED_PARAMS"] = "1"
     import config; importlib.reload(config)
-    import database as db; importlib.reload(db)
     import predictor; importlib.reload(predictor)
 
-    tmp = tempfile.mktemp(suffix=".db")
-    orig = db.DATABASE_PATH
-    db.DATABASE_PATH = tmp
-    db.init_db()
+    # Walk-forward THUAN PYTHON: tran thu i du doan bang real[:i] (chi qua khu).
+    # Khong con DB tam / trao DATABASE_PATH -> nhanh (vai giay ca luoi) va het
+    # han hazard ro du lieu replay vao DB that.
     ll = 0.0; n = 0; top1 = 0; brier = 0.0
     gains = []  # lai/lo tung cuoc (de tinh ROI + bootstrap CI)
-    try:
-        for row in real:
-            monsters = [{"name": row[f"monster{i}_name"], "multiplier": row[f"monster{i}_multiplier"]} for i in range(1, 5)]
-            teacher = {"name": row["teacher_name"], "multiplier": row["teacher_multiplier"]}
-            wname = teacher["name"] if row["winner"] == "teacher" else row[f"{row['winner']}_name"]
-            if db.get_total_rounds_with_winner() >= min_history:
-                P = predictor.predict(monsters, teacher)["probabilities"]
-                pw = max(P.get(wname, 1e-9), 1e-9)
-                ll += -math.log(pw); n += 1
-                if max(P, key=P.get) == wname:
-                    top1 += 1
-                for nm, pr in P.items():
-                    brier += (pr - (1.0 if nm == wname else 0.0)) ** 2
-                # ROI: cuoc 1 don vi vao nhan vat co EV du doan cao nhat.
-                odds_map_round = {c["name"]: c["multiplier"] for c in monsters + [teacher]}
-                pick = max(P, key=lambda nm: P[nm] * odds_map_round.get(nm, 1.0))
-                gains.append(odds_map_round[pick] - 1 if pick == wname else -1.0)
-            db.save_round(monsters, teacher, winner=row["winner"], source="bt")
-    finally:
-        db.DATABASE_PATH = orig
-        try: os.unlink(tmp)
-        except OSError: pass
+    for i, row in enumerate(real):
+        if i < min_history:
+            continue
+        monsters = [{"name": row[f"monster{i2}_name"], "multiplier": row[f"monster{i2}_multiplier"]} for i2 in range(1, 5)]
+        teacher = {"name": row["teacher_name"], "multiplier": row["teacher_multiplier"]}
+        wname = teacher["name"] if row["winner"] == "teacher" else row[f"{row['winner']}_name"]
+        P = predictor.predict(monsters, teacher, real[:i])["probabilities"]
+        pw = max(P.get(wname, 1e-9), 1e-9)
+        ll += -math.log(pw); n += 1
+        if max(P, key=P.get) == wname:
+            top1 += 1
+        for nm, pr in P.items():
+            brier += (pr - (1.0 if nm == wname else 0.0)) ** 2
+        # ROI: cuoc 1 don vi vao nhan vat co EV du doan cao nhat.
+        odds_map_round = {c["name"]: c["multiplier"] for c in monsters + [teacher]}
+        pick = max(P, key=lambda nm: P[nm] * odds_map_round.get(nm, 1.0))
+        gains.append(odds_map_round[pick] - 1 if pick == wname else -1.0)
     return ll / n, top1, n, brier / n, sum(gains) / n, gains
 
 

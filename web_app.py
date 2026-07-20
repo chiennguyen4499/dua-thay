@@ -64,6 +64,14 @@ def _cached_sa_rounds():
 
 
 @st.cache_data(show_spinner=False)
+def _cached_pred_rounds():
+    """Toàn bộ trận có kết quả — truyền cho `predict()` để nó KHÔNG round-trip
+    Turso (predictor giờ là pure function nhận list trận). Cache theo phiên; đổi
+    khi ghi/xóa dữ liệu (đã thêm vào `_bust_data_cache`)."""
+    return db.get_all_rounds_with_winner()
+
+
+@st.cache_data(show_spinner=False)
 def _cached_high_odds_appearances(min_odds: int = 9):
     return db.get_high_odds_appearances(min_odds)
 
@@ -81,6 +89,7 @@ def _bust_data_cache():
     _cached_odds_calibration_data.clear()
     _cached_recent_rounds.clear()
     _cached_sa_rounds.clear()
+    _cached_pred_rounds.clear()
     _cached_high_odds_appearances.clear()
     _cached_teacher_appearances.clear()
 
@@ -439,7 +448,7 @@ if active_tab == TAB_LABELS[0]:
                 round_id = db.save_round(monsters, teacher, winner=None, source="web")
                 _bust_data_cache()  # trận mới -> đổi "Chờ nhập KQ" / danh sách trận
             with st.spinner("Đang tính toán..."):
-                prediction = pred.predict(monsters, teacher)
+                prediction = pred.predict(monsters, teacher, _cached_pred_rounds())
             st.session_state["pred"] = {
                 "prediction": prediction, "monsters": monsters, "sig": sig,
                 "teacher": teacher, "round_id": round_id, "recorded": None,

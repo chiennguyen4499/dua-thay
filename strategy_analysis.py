@@ -13,17 +13,10 @@ Thuoc do quan trong nhat = ROI: cuoc 1 don vi/tran.
 
 import os
 import json
-import threading
 
 import database as db
 
-# Source tag DUY NHẤT cho dữ liệu replay leave-one-out trong DB tạm. Không bao giờ
-# là dữ liệu thật → mọi dòng mang tag này trong DB thật đều là rác và bị dọn.
-_REPLAY_SOURCE = "_wf_replay_tmp"
-# Serialize các lần replay (đổi db.DATABASE_PATH toàn cục) để tránh đua thread.
-_REPLAY_LOCK = threading.Lock()
-
-# Cache LOO ra ĐĨA (giống tuned_params.json): web chỉ LOAD thay vì tính lại 17s
+# Cache LOO ra ĐĨA (giống tuned_params.json): web chỉ LOAD thay vì tính lại
 # mỗi lần khởi động. Hết hạn khi SỐ TRẬN hoặc THAM SỐ TUNE đổi (kết quả sẽ khác).
 _PICKS_CACHE = os.path.join(os.path.dirname(__file__), "model_picks_cache.json")
 
@@ -166,9 +159,8 @@ def compute_model_picks(min_history=10):
     """LEAVE-ONE-OUT (LOO): mỗi trận được dự đoán bằng TẤT CẢ trận khác, chỉ bỏ
     đúng trận đang xét. Trả về lựa chọn của mô hình cho mỗi trận.
 
-    Đây là phần TỐN KÉM (predict ×N + ghi/xoá DB tạm, ~chục giây). Tách riêng và
-    KHÔNG phụ thuộc ngưỡng EV để web cache theo số trận — kéo slider ngưỡng không
-    phải chạy lại. Lọc/tổng hợp theo ngưỡng bằng `aggregate_model_strategies`.
+    Tách riêng và KHÔNG phụ thuộc ngưỡng EV để web cache theo số trận — kéo slider
+    ngưỡng không phải chạy lại. Lọc/tổng hợp theo ngưỡng bằng `aggregate_model_strategies`.
 
     Vì loại đúng trận đang xét nên KHÔNG có "biết trước đáp án" (không bị thổi
     phồng như in-sample). Đánh giá mọi trận bằng ~N-1 trận còn lại → phản ánh chất
@@ -176,12 +168,16 @@ def compute_model_picks(min_history=10):
     vốn bị kéo xuống bởi các dự đoán đầu lúc data mỏng). Lưu ý: LOO dùng cả trận
     tương lai để ước lượng, nên về lý thuyết hơi lạc quan so với lúc chơi thật.
 
-    `min_history`: chỉ đánh giá khi DB tạm (sau khi bỏ 1 trận) còn ≥ ngần này trận.
+    Từ 2026-07-20 chạy THUẦN PYTHON trên list trận (predictor là pure function):
+    mỗi trận predict bằng `real[:i] + real[i+1:]`. KHÔNG còn DB tạm / tráo
+    `db.DATABASE_PATH` / lock / dọn rác → hết hazard rò dữ liệu, và nhanh hơn
+    nhiều (không ghi/xoá hàng trăm lượt vào DB).
+
+    `min_history`: chỉ đánh giá khi phần lịch sử còn lại ≥ ngần này trận.
 
     Trả về list dict: {"best_ev": float, "gain": float, "won": bool}.
     """
-    import os, tempfile, sqlite3
-    import database as db
+    import predictor
 
     real = sorted(db.get_all_rounds_with_winner(), key=lambda r: r["id"])
 
@@ -192,44 +188,20 @@ def compute_model_picks(min_history=10):
         return monsters, teacher, wname
 
     picks = []
-    tmp = tempfile.mktemp(suffix=".db")
-    # Khoá chống chạy chồng: web (mỗi rerun) + bot daemon thread DÙNG CHUNG module
-    # `database`, nên việc tạm đổi `db.DATABASE_PATH` toàn cục là điểm tranh chấp.
-    with _REPLAY_LOCK:
-        orig = db.DATABASE_PATH
-        db.DATABASE_PATH = tmp
-        import predictor  # import sau khi đã trỏ DATABASE_PATH
-        db.init_db()
-        try:
-            # Nạp toàn bộ trận vào DB tạm, nhớ id để bỏ-ra/nạp-lại từng trận.
-            ids = [db.save_round(*_unpack(row)[:2], winner=row["winner"], source=_REPLAY_SOURCE)
-                   for row in real]
-            for i, row in enumerate(real):
-                monsters, teacher, wname = _unpack(row)
-                db.delete_round(ids[i], only_pending=False)  # bỏ ĐÚNG trận đang xét
-                if db.get_total_rounds_with_winner() >= min_history:
-                    P = predictor.predict(monsters, teacher)["probabilities"]
-                    odds_map = {c["name"]: c["multiplier"] for c in monsters + [teacher]}
-                    pick = max(P, key=lambda nm: P[nm] * odds_map.get(nm, 1.0))
-                    won = pick == wname
-                    picks.append({
-                        "best_ev": P[pick] * odds_map[pick],
-                        "gain": (odds_map[pick] - 1) if won else -1,
-                        "won": won,
-                    })
-                ids[i] = db.save_round(monsters, teacher, winner=row["winner"], source=_REPLAY_SOURCE)  # nạp lại
-        finally:
-            db.DATABASE_PATH = orig
-            try: os.unlink(tmp)
-            except OSError: pass
-            # Lưới an toàn: _REPLAY_SOURCE CHỈ do hàm này sinh trong DB tạm. Nếu vì
-            # bất cứ lý do gì (đua thread) có dòng lọt vào DB THẬT, dọn ngay.
-            # Đi qua db.clear_rounds_by_source() (không tự mở sqlite3.connect) để
-            # luôn dọn đúng backend đang cấu hình (local hoặc Turso).
-            try:
-                db.clear_rounds_by_source(_REPLAY_SOURCE)
-            except Exception:
-                pass
+    for i, row in enumerate(real):
+        history = real[:i] + real[i + 1:]  # bỏ ĐÚNG trận đang xét
+        if len(history) < min_history:
+            continue
+        monsters, teacher, wname = _unpack(row)
+        P = predictor.predict(monsters, teacher, history)["probabilities"]
+        odds_map = {c["name"]: c["multiplier"] for c in monsters + [teacher]}
+        pick = max(P, key=lambda nm: P[nm] * odds_map.get(nm, 1.0))
+        won = pick == wname
+        picks.append({
+            "best_ev": P[pick] * odds_map[pick],
+            "gain": (odds_map[pick] - 1) if won else -1,
+            "won": won,
+        })
     return picks
 
 
