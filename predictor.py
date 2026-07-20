@@ -288,24 +288,35 @@ def _build_result(monsters, teacher, probs, method, sample_count, details, messa
     p_lo, p_hi = _wilson_ci(ev_p, ev_n) if ev_n > 0 else (None, None)
     kelly = _kelly_fraction(ev_p, ev_mult)
 
-    # ── Cặp kèo NÊN ĐÁNH (luật game: tối đa 2 con/trận) ──────────────
-    # CHẶN mô hình đuổi kèo Thầy/bội cao "EV đẹp trên giấy": chỉ nhận nhân vật
-    # nằm trên GIÁ TRỊ BỘI đã chứng minh +EV — tiêu chí data-driven: cận DƯỚI CI
-    # Wilson của win-rate tầng bội đó × bội > 1 (tức +EV cả ở kịch bản bi quan),
-    # và tầng đủ mẫu. Với data hiện tại chỉ bội 5 & 9 qua cổng này; Thầy và bội
-    # 10/11/12 bị loại (win-rate cận dưới quá thấp so với bội). Tự nới khi data
-    # tăng: nếu một bội khác tích đủ thắng, nó sẽ tự lọt vào.
+    # ── Cổng TIN CẬY = chính sách cược tối ưu (backtest 2026-07-20) ──────────
+    # Backtest walk-forward (276 trận) cho thấy: chỉ cần cược MỌI yêu quái mang
+    # GIÁ TRỊ BỘI đã chứng minh +EV (tối đa 2/trận, favorite trước) là đạt tổng
+    # lợi cao nhất & bền nhất — ROI ~+60→83%, CI luôn dương. Đây HƠN HẲN việc
+    # đi theo EV mô hình (chỉ +32%, và kèo Thầy mô hình chọn thắng 1/50 = bẫy).
+    #
+    # Cổng data-driven, KHÔNG fit theo ROI (tránh winner's curse): cận DƯỚI CI
+    # Wilson của win-rate tầng bội đó × bội. Tham số nguyên tắc, không dò:
+    #   - LOẠI THẦY khỏi cổng (cấu trúc): Thầy là kèo xổ số 14–26x, thắng ~5%,
+    #     MỌI tầng bội của Thầy có wr_lo×bội ≤ 0.96 (<1) — không bao giờ là kèo
+    #     kỷ luật. Loại luôn để chặn rò khi 1 tầng Thầy trúng may lúc mẫu ít.
+    #   - n_tier ≥ 20: đủ mẫu để tin, giảm rò tầng bội cao trúng may mẫu nhỏ.
+    #   - biên 1.15: tách RÕ 2 edge thật (bội 5 = 1.48, bội 9 = 1.25) khỏi tầng
+    #     hòa vốn (bội 4 = 1.01). Không nhận tầng chỉ nhỉnh hơn hòa vốn.
+    # Trên data hiện tại chỉ bội 5 & 9 qua cổng; tự nới/siết khi data đổi.
+    TRUSTED_MIN_N = 20
+    TRUSTED_MARGIN = 1.15
     trusted = {}
     for name in probs:
+        if name == teacher["name"]:
+            trusted[name] = False  # Thầy không bao giờ là kèo kỷ luật.
+            continue
         d = details.get(name, {})
         n_tier = d.get("odds_appeared", 0) or 0
         wr = d.get("odds_win_rate")
         o = odds_map.get(name, 1.0)
-        if n_tier >= 10 and wr is not None:
+        if n_tier >= TRUSTED_MIN_N and wr is not None:
             wr_lo, _ = _wilson_ci(wr, n_tier)
-            # Biên 1.05: đòi lợi thế RÕ (≥5%) cả ở kịch bản bi quan, không nhận
-            # tier hòa vốn (vd bội 4 ~1.0, hay về nhưng ăn ké dải bội 5).
-            trusted[name] = (wr_lo * o) > 1.05
+            trusted[name] = (wr_lo * o) > TRUSTED_MARGIN
         else:
             trusted[name] = False
 
@@ -320,19 +331,17 @@ def _build_result(monsters, teacher, probs, method, sample_count, details, messa
     trusted_names = sorted([n for n in probs if trusted[n]], key=lambda n: odds_map[n])
     bet_pair = [_bet_entry(n) for n in trusted_names[:2]]
 
-    # ── Lựa chọn 1 — THEO MÔ HÌNH (EV cao nhất, KHÔNG lọc cổng tin cậy) ──────
-    # Luật game: cược THẦY thì chỉ được 1 mình Thầy (không kèm yêu quái). Nên:
-    #   - nếu con EV cao nhất là Thầy -> gợi ý Thầy ĐƠN (1 cược).
-    #   - ngược lại -> 2 yêu quái EV cao nhất (bỏ qua Thầy).
+    # ── THAM KHẢO — MÔ HÌNH EV nghĩ gì (KHÔNG phải khuyến nghị cược) ─────────
+    # Backtest cho thấy đi theo EV mô hình kém hơn kỷ luật bội 5&9 (ROI +32% vs
+    # +60%), và khi mô hình xếp THẦY EV cao nhất thì gần như luôn thua (1/50 —
+    # bội 14–26 variance cực lớn). Nên ở đây CHỈ hiển thị 2 yêu quái EV cao nhất
+    # để tham khảo, KHÔNG bao giờ gợi ý cược Thầy. Nếu EV cao nhất toàn cục là
+    # Thầy thì bật cờ cảnh báo để UI nhắc "bỏ / theo kỷ luật".
     teacher_name = teacher["name"]
     ranked = sorted(probs, key=lambda n: ev_map[n], reverse=True)
-    if ranked and ranked[0] == teacher_name:
-        model_pair = [_bet_entry(teacher_name)]
-        model_solo_teacher = True
-    else:
-        top_monsters = [n for n in ranked if n != teacher_name][:2]
-        model_pair = [_bet_entry(n) for n in top_monsters]
-        model_solo_teacher = False
+    model_top_is_teacher = bool(ranked and ranked[0] == teacher_name)
+    top_monsters = [n for n in ranked if n != teacher_name][:2]
+    model_pair = [_bet_entry(n) for n in top_monsters]
 
     return {
         "method": method,
@@ -360,11 +369,13 @@ def _build_result(monsters, teacher, probs, method, sample_count, details, messa
             # Mức cược gợi ý (¼-Kelly, trần 5% vốn); 0 nếu không có lợi thế.
             "stake_fraction": kelly,
         },
-        # Lựa chọn 2 — kỷ luật (chỉ bội 5&9 đáng tin, favorite trước). Rỗng = bỏ trận.
+        # KHUYẾN NGHỊ CHÍNH — kỷ luật bội 5&9 (chính sách tổng-lợi tối ưu),
+        # favorite trước, tối đa 2 con. Rỗng = nên BỎ TRẬN.
         "bet_pair": bet_pair,
-        # Lựa chọn 1 — theo mô hình (EV cao nhất, tôn trọng luật Thầy đơn).
+        # THAM KHẢO — 2 yêu quái EV mô hình cao nhất (không phải khuyến nghị).
         "model_pair": model_pair,
-        "model_solo_teacher": model_solo_teacher,
+        # Cờ: EV cao nhất toàn cục rơi vào Thầy (kèo bẫy) -> UI cảnh báo bỏ.
+        "model_top_is_teacher": model_top_is_teacher,
         "trusted": trusted,
         "message": message,
     }
@@ -432,23 +443,25 @@ def format_prediction_text(pred: dict, monsters: list[dict], teacher: dict) -> s
         return (f"   • *{display_name(b['name'])}* ({b['multiplier']:g}x) — "
                 f"EV {b['expected_value']:.2f}, thắng ~{b['probability']*100:.0f}%{stake_str}")
 
-    lines.append("\n─── ① Theo mô hình (EV cao nhất) ───")
-    if pred.get("model_solo_teacher"):
-        lines.append(_bet_line(model_pair[0]))
-        lines.append("   _Mô hình thích Thầy — luật: cược Thầy thì CHỈ đánh 1 mình Thầy._")
-    else:
-        for b in model_pair:
-            lines.append(_bet_line(b))
-        lines.append("   _2 yêu quái EV cao nhất (có thể bội cao, variance lớn)._")
-
-    lines.append("─── ② Kỷ luật (bội 5 & 9 — bền) ───")
+    # ✅ KHUYẾN NGHỊ CHÍNH — kỷ luật bội 5 & 9 (chính sách tổng-lợi tối ưu).
+    lines.append("\n─── ✅ KHUYẾN NGHỊ: Kỷ luật bội 5 & 9 ───")
     if disc_pair:
         for b in disc_pair:
             lines.append(_bet_line(b))
         if len(disc_pair) == 2:
             lines.append("   _Cược CẢ 2 favorite: thắng nếu 1 trong 2 về (~72%), ít chuỗi thua._")
+        else:
+            lines.append("   _Chỉ 1 con bội 5/9 đủ tin ở trận này._")
     else:
-        lines.append("   🚫 _Không có con bội 5/9 đủ tin → nên bỏ trận._")
+        lines.append("   🚫 _Không có con bội 5/9 đủ tin → NÊN BỎ TRẬN (để vốn trống hơn cược ép)._")
+
+    # ℹ️ THAM KHẢO — EV mô hình (kém hơn kỷ luật; KHÔNG cược Thầy).
+    lines.append("─── ℹ️ Tham khảo: mô hình EV nghĩ gì ───")
+    for b in model_pair:
+        lines.append(_bet_line(b))
+    if pred.get("model_top_is_teacher"):
+        lines.append("   ⚠️ _EV cao nhất rơi vào THẦY (bội cao) — lịch sử thua nặng, đừng đuổi._")
+    lines.append("   _Chỉ tham khảo: đi theo EV mô hình dài hạn LÃI ÍT HƠN kỷ luật bội 5&9._")
 
     lines.append(
         f"🛡 _Xác suất cao nhất (tham khảo): {display_name(rec['name'])} "

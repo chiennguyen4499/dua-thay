@@ -292,46 +292,42 @@ def render_prediction(state):
         st.warning("⚠️ Dữ liệu còn ít hoặc các lựa chọn quá sát nhau. Game ngẫu nhiên cao "
                    "— hãy coi là tham khảo, đừng cược nặng.")
 
-    # ── 2 LỰA CHỌN cược (luật game: 2 con/trận; cược Thầy thì chỉ 1 mình Thầy) ──
+    # ── KHUYẾN NGHỊ: kỷ luật bội 5 & 9 (chính sách tổng-lợi tối ưu qua backtest);
+    #    Mô hình EV chỉ là tham khảo (đi theo nó dài hạn lãi ít hơn, và kèo Thầy
+    #    mô hình chọn gần như luôn thua). Luật game: tối đa 2 con/trận. ──────────
     rec = prediction["recommendation"]
     model_pair = prediction.get("model_pair", [])
     disc_pair = prediction.get("bet_pair", [])
 
-    def _bet_card(container, b):
+    def _bet_line(b):
         _stake = b.get("stake_fraction", 0) or 0
         _stake_str = (f"💵 ~{_stake*100:.1f}% vốn" if _stake > 0 else "💵 lợi thế mỏng")
-        container.markdown(
-            f"**{display_name(b['name'])}** — **{b['multiplier']:g}x** · "
-            f"EV **{b['expected_value']:.2f}** · thắng ~{b['probability']*100:.0f}% · {_stake_str}"
-        )
+        return (f"**{display_name(b['name'])}** — **{b['multiplier']:g}x** · "
+                f"EV **{b['expected_value']:.2f}** · thắng ~{b['probability']*100:.0f}% · {_stake_str}")
 
-    opt1, opt2 = st.columns(2)
-    # Lựa chọn 1 — theo mô hình
-    with opt1:
-        st.markdown("#### ① Theo mô hình (EV cao nhất)")
-        if prediction.get("model_solo_teacher"):
-            _bet_card(st, model_pair[0])
-            st.caption("👨‍🏫 Mô hình thích **Thầy** — luật: cược Thầy thì **chỉ đánh 1 mình Thầy**, "
-                       "không kèm yêu quái.")
+    # KHUYẾN NGHỊ CHÍNH — nổi bật.
+    st.markdown("#### ✅ Khuyến nghị: Kỷ luật bội 5 & 9")
+    if disc_pair:
+        body = "\n\n".join(_bet_line(b) for b in disc_pair)
+        if len(disc_pair) == 2:
+            body += "\n\n_Cược CẢ 2 favorite: thắng nếu 1 trong 2 về (dữ liệu ~72%), ít chuỗi thua. Đây là chính sách tổng-lợi cao & bền nhất qua backtest._"
         else:
-            for b in model_pair:
-                _bet_card(st, b)
-            st.caption("2 yêu quái EV cao nhất. ⚠️ Mô hình có thể gợi ý bội cao "
-                       "variance lớn — cân nhắc với lựa chọn ② bên cạnh.")
-    # Lựa chọn 2 — kỷ luật bội 5 & 9
-    with opt2:
-        st.markdown("#### ② Kỷ luật (bội 5 & 9 — bền)")
-        if disc_pair:
-            for b in disc_pair:
-                _bet_card(st, b)
-            if len(disc_pair) == 2:
-                st.caption("✅ Cược CẢ 2 (favorite): thắng nếu 1 trong 2 về — ít chuỗi "
-                           "thua (dữ liệu ~72%).")
-            else:
-                st.caption("Chỉ 1 con bội 5/9 ở trận này.")
-        else:
-            st.caption("🚫 Trận này không có con bội 5/9 nào đủ tin → **nên bỏ trận** "
-                       "(để vốn trống hơn là cược ép).")
+            body += "\n\n_Chỉ 1 con bội 5/9 đủ tin ở trận này._"
+        st.success(body)
+    else:
+        st.success("🚫 **Nên BỎ TRẬN** — không có con bội 5/9 nào đủ tin. Để vốn trống "
+                   "còn hơn cược ép (backtest: cược ngoài bội 5/9 không có lợi thế bền).")
+
+    # THAM KHẢO — mô hình, thu gọn.
+    with st.expander("ℹ️ Tham khảo — mô hình EV nghĩ gì (không phải khuyến nghị)"):
+        for b in model_pair:
+            st.markdown(_bet_line(b))
+        if prediction.get("model_top_is_teacher"):
+            st.warning("⚠️ EV cao nhất toàn cục rơi vào **Thầy** (bội cao). Lịch sử: kèo Thầy "
+                       "mô hình chấm điểm cao thắng ~1/50 — **đừng đuổi**, theo kỷ luật ở trên.")
+        st.caption("Cược theo EV mô hình (2 con mỗi trận) **hiệu quả kém hơn**: backtest "
+                   "ROI ~+46% so với ~+65% của kỷ luật bội 5&9, vì nó cược lấn cả những "
+                   "bội CHƯA chứng minh lãi (bội 8/10 thực ra âm). Bảng dưới xem xác suất/EV từng con.")
     st.caption(f"🛡 Xác suất cao nhất (tham khảo): **{display_name(rec['name'])}** "
                f"{rec['multiplier']:g}x · {rec['probability']*100:.0f}%.")
 
