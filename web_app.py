@@ -292,34 +292,46 @@ def render_prediction(state):
         st.warning("⚠️ Dữ liệu còn ít hoặc các lựa chọn quá sát nhau. Game ngẫu nhiên cao "
                    "— hãy coi là tham khảo, đừng cược nặng.")
 
-    # ── KÈO NÊN ĐÁNH (luật game: tối đa 2 con/trận) ──────────────────
-    # Chỉ gợi ý con nằm trên giá trị bội đã chứng minh +EV chắc (thực tế: bội
-    # 5 & 9). Con bội cao/Thầy "EV đẹp trên giấy" đã bị lọc bỏ (dễ thua chuỗi).
+    # ── 2 LỰA CHỌN cược (luật game: 2 con/trận; cược Thầy thì chỉ 1 mình Thầy) ──
     rec = prediction["recommendation"]
-    pair = prediction.get("bet_pair", [])
-    if pair:
-        st.markdown(f"### 🎯 Nên đánh {len(pair)} con (luật cược 2)")
-        pcols = st.columns(len(pair))
-        for pc, b in zip(pcols, pair):
-            _stake = b.get("stake_fraction", 0) or 0
-            _stake_str = (f"💵 ~{_stake*100:.1f}% vốn" if _stake > 0
-                          else "💵 lợi thế mỏng, cược nhẹ")
-            pc.success(
-                f"**{display_name(b['name'])}**\n\n"
-                f"### {b['multiplier']:g}x\n"
-                f"EV **{b['expected_value']:.2f}** · thắng ~{b['probability']*100:.0f}%\n\n"
-                f"{_stake_str}"
-            )
-        if len(pair) == 2:
-            st.caption("✅ Cược CẢ 2 con: thắng nếu 1 trong 2 về — thắng thường "
-                       "xuyên hơn, ít chuỗi thua dài (dữ liệu: cặp favorite ~72%).")
+    model_pair = prediction.get("model_pair", [])
+    disc_pair = prediction.get("bet_pair", [])
+
+    def _bet_card(container, b):
+        _stake = b.get("stake_fraction", 0) or 0
+        _stake_str = (f"💵 ~{_stake*100:.1f}% vốn" if _stake > 0 else "💵 lợi thế mỏng")
+        container.markdown(
+            f"**{display_name(b['name'])}** — **{b['multiplier']:g}x** · "
+            f"EV **{b['expected_value']:.2f}** · thắng ~{b['probability']*100:.0f}% · {_stake_str}"
+        )
+
+    opt1, opt2 = st.columns(2)
+    # Lựa chọn 1 — theo mô hình
+    with opt1:
+        st.markdown("#### ① Theo mô hình (EV cao nhất)")
+        if prediction.get("model_solo_teacher"):
+            _bet_card(st, model_pair[0])
+            st.caption("👨‍🏫 Mô hình thích **Thầy** — luật: cược Thầy thì **chỉ đánh 1 mình Thầy**, "
+                       "không kèm yêu quái.")
         else:
-            st.caption("Chỉ 1 con đủ tin ở trận này. Con thứ 2 (bội cao/Thầy) "
-                       "không đủ bằng chứng +EV → không nên cược thêm.")
-    else:
-        st.warning("🚫 **Không nên cược trận này** — không có con nào nằm trên bội "
-                   "đã chứng minh +EV (bội 5 hoặc 9). Các lựa chọn còn lại (bội cao, "
-                   "Thầy) EV đẹp trên giấy nhưng thực tế lỗ. Để vốn trống > cược ép.")
+            for b in model_pair:
+                _bet_card(st, b)
+            st.caption("2 yêu quái EV cao nhất. ⚠️ Mô hình có thể gợi ý bội cao "
+                       "variance lớn — cân nhắc với lựa chọn ② bên cạnh.")
+    # Lựa chọn 2 — kỷ luật bội 5 & 9
+    with opt2:
+        st.markdown("#### ② Kỷ luật (bội 5 & 9 — bền)")
+        if disc_pair:
+            for b in disc_pair:
+                _bet_card(st, b)
+            if len(disc_pair) == 2:
+                st.caption("✅ Cược CẢ 2 (favorite): thắng nếu 1 trong 2 về — ít chuỗi "
+                           "thua (dữ liệu ~72%).")
+            else:
+                st.caption("Chỉ 1 con bội 5/9 ở trận này.")
+        else:
+            st.caption("🚫 Trận này không có con bội 5/9 nào đủ tin → **nên bỏ trận** "
+                       "(để vốn trống hơn là cược ép).")
     st.caption(f"🛡 Xác suất cao nhất (tham khảo): **{display_name(rec['name'])}** "
                f"{rec['multiplier']:g}x · {rec['probability']*100:.0f}%.")
 

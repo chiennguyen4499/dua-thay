@@ -315,10 +315,24 @@ def _build_result(monsters, teacher, probs, method, sample_count, details, messa
         return {"name": name, "multiplier": m, "probability": p,
                 "expected_value": p * m, "stake_fraction": _kelly_fraction(p, m)}
 
-    # Ưu tiên FAVORITE (bội thấp trước = bội 5 trước bội 9) — data cho thấy cược
-    # 2 favorite thắng ~72% (variance thấp), tốt hơn đuổi EV cao/variance cao.
+    # ── Lựa chọn 2 — KỶ LUẬT (bội 5 & 9): favorite trước (bội thấp trước) —
+    # data cho thấy cược 2 favorite thắng ~72% (variance thấp).
     trusted_names = sorted([n for n in probs if trusted[n]], key=lambda n: odds_map[n])
     bet_pair = [_bet_entry(n) for n in trusted_names[:2]]
+
+    # ── Lựa chọn 1 — THEO MÔ HÌNH (EV cao nhất, KHÔNG lọc cổng tin cậy) ──────
+    # Luật game: cược THẦY thì chỉ được 1 mình Thầy (không kèm yêu quái). Nên:
+    #   - nếu con EV cao nhất là Thầy -> gợi ý Thầy ĐƠN (1 cược).
+    #   - ngược lại -> 2 yêu quái EV cao nhất (bỏ qua Thầy).
+    teacher_name = teacher["name"]
+    ranked = sorted(probs, key=lambda n: ev_map[n], reverse=True)
+    if ranked and ranked[0] == teacher_name:
+        model_pair = [_bet_entry(teacher_name)]
+        model_solo_teacher = True
+    else:
+        top_monsters = [n for n in ranked if n != teacher_name][:2]
+        model_pair = [_bet_entry(n) for n in top_monsters]
+        model_solo_teacher = False
 
     return {
         "method": method,
@@ -346,9 +360,11 @@ def _build_result(monsters, teacher, probs, method, sample_count, details, messa
             # Mức cược gợi ý (¼-Kelly, trần 5% vốn); 0 nếu không có lợi thế.
             "stake_fraction": kelly,
         },
-        # Cặp NÊN ĐÁNH (tối đa 2 con, đã lọc chỉ bội +EV đáng tin, favorite trước).
-        # Rỗng = không con nào đủ tin → nên bỏ trận.
+        # Lựa chọn 2 — kỷ luật (chỉ bội 5&9 đáng tin, favorite trước). Rỗng = bỏ trận.
         "bet_pair": bet_pair,
+        # Lựa chọn 1 — theo mô hình (EV cao nhất, tôn trọng luật Thầy đơn).
+        "model_pair": model_pair,
+        "model_solo_teacher": model_solo_teacher,
         "trusted": trusted,
         "message": message,
     }
@@ -407,26 +423,33 @@ def format_prediction_text(pred: dict, monsters: list[dict], teacher: dict) -> s
         )
 
     rec = pred["recommendation"]
-    pair = pred.get("bet_pair", [])
+    model_pair = pred.get("model_pair", [])
+    disc_pair = pred.get("bet_pair", [])
 
-    lines.append("\n─── Nên đánh (luật cược 2 con) ───")
-    if pair:
-        for b in pair:
-            stake = b.get("stake_fraction", 0) or 0
-            stake_str = (f" · cược ~{stake*100:.1f}% vốn" if stake > 0 else " · cược nhẹ")
-            lines.append(
-                f"🎯 *{display_name(b['name'])}* ({b['multiplier']:g}x) — "
-                f"EV {b['expected_value']:.2f}, thắng ~{b['probability']*100:.0f}%{stake_str}"
-            )
-        if len(pair) == 2:
-            lines.append("   _Cược CẢ 2: thắng nếu 1 trong 2 về — ít chuỗi thua (cặp favorite ~72%)._")
-        else:
-            lines.append("   _Chỉ 1 con đủ tin; con còn lại (bội cao/Thầy) không đủ bằng chứng +EV._")
+    def _bet_line(b):
+        stake = b.get("stake_fraction", 0) or 0
+        stake_str = (f" · cược ~{stake*100:.1f}% vốn" if stake > 0 else " · cược nhẹ")
+        return (f"   • *{display_name(b['name'])}* ({b['multiplier']:g}x) — "
+                f"EV {b['expected_value']:.2f}, thắng ~{b['probability']*100:.0f}%{stake_str}")
+
+    lines.append("\n─── ① Theo mô hình (EV cao nhất) ───")
+    if pred.get("model_solo_teacher"):
+        lines.append(_bet_line(model_pair[0]))
+        lines.append("   _Mô hình thích Thầy — luật: cược Thầy thì CHỈ đánh 1 mình Thầy._")
     else:
-        lines.append(
-            "🚫 _Không nên cược trận này — không có con nào ở bội đã chứng minh +EV "
-            "(5 hoặc 9). Bội cao/Thầy EV đẹp trên giấy nhưng thực tế lỗ. Bỏ trận._"
-        )
+        for b in model_pair:
+            lines.append(_bet_line(b))
+        lines.append("   _2 yêu quái EV cao nhất (có thể bội cao, variance lớn)._")
+
+    lines.append("─── ② Kỷ luật (bội 5 & 9 — bền) ───")
+    if disc_pair:
+        for b in disc_pair:
+            lines.append(_bet_line(b))
+        if len(disc_pair) == 2:
+            lines.append("   _Cược CẢ 2 favorite: thắng nếu 1 trong 2 về (~72%), ít chuỗi thua._")
+    else:
+        lines.append("   🚫 _Không có con bội 5/9 đủ tin → nên bỏ trận._")
+
     lines.append(
         f"🛡 _Xác suất cao nhất (tham khảo): {display_name(rec['name'])} "
         f"{rec['probability']*100:.0f}%._"
