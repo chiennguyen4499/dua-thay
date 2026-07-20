@@ -39,13 +39,13 @@ quyết định local hay remote (xem mục 3 và 9).
 
 | File | Vai trò |
 |------|---------|
-| [config.py](config.py) | Cấu hình, đọc `.env`; `KNOWN_MONSTERS` (18), `KNOWN_TEACHERS`, `TEACHER_DEFAULT="Duong_tang"`, `MIN_SAMPLES_FOR_PATTERN=3`. **`DATABASE_PATH` neo theo `__file__`** (thư mục dự án), không theo CWD → chạy/di chuyển thư mục từ đâu cũng đúng DB. `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN` (để trống = chỉ dùng SQLite local) |
+| [config.py](config.py) | Cấu hình, đọc `.env`; `KNOWN_MONSTERS` (18), `KNOWN_TEACHERS`, `TEACHER_DEFAULT="Duong_tang"`. **`DATABASE_PATH` neo theo `__file__`** (thư mục dự án), không theo CWD → chạy/di chuyển thư mục từ đâu cũng đúng DB. `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN` (để trống = chỉ dùng SQLite local) |
 | [database.py](database.py) | Schema, lưu/đọc trận, thống kê, pattern key. `get_conn()` tự chọn SQLite local hay Turso (remote) — xem mục 3 và 9 |
-| [predictor.py](predictor.py) | Thuật toán dự đoán 3 tầng + format text Telegram |
+| [predictor.py](predictor.py) | Thuật toán dự đoán 2 tầng (shrinkage phân tầng / odds) + format text Telegram |
 | [telegram_bot.py](telegram_bot.py) | Bot: nhập tay (`/manual`), `/result`, `/stats` |
 | [web_app.py](web_app.py) | Streamlit UI 4 tab |
 | [backtest.py](backtest.py) | Walk-forward backtest: đo predictor vs odds-only vs uniform (logloss/brier/top-1) |
-| [tune_shrinkage.py](tune_shrinkage.py) | Quét tham số K (ODDS_CALIB / NAME_ODDS / INDIVIDUAL) theo **ROI walk-forward (EV tối đa)** để retune khi có thêm dữ liệu; ghi `tuned_params.json` kèm `optimized_by="roi_ev"` |
+| [tune_shrinkage.py](tune_shrinkage.py) | Quét tham số K (ODDS_CALIB / NAME_ODDS / INDIVIDUAL) theo **logloss walk-forward** (từ 2026-07-20, trước đó là ROI — bị winner's curse, xem mục 9); ghi `tuned_params.json` kèm ROI tham khảo + **CI 95% bootstrap** (`_meta.roi_ci95`), `optimized_by="logloss"` |
 | [strategy_analysis.py](strategy_analysis.py) | Kiểm chứng heuristic cược (bội to/nhỏ, thầy bội cao) + ROI từng chiến lược; **ROI "theo mô hình" tính leave-one-out** (`compute_model_picks` + `aggregate_model_strategies`) |
 | [main.py](main.py) | Entry point chạy bot + web |
 | `.env` / [.env.example](.env.example) | Token & cấu hình (Telegram, Turso) |
@@ -81,21 +81,16 @@ notes                 TEXT          -- vd 'original_id:62' để chống import 
 sorted_names = sorted(m["name"] for m in monsters)
 return "|".join(sorted_names) + f"|T:{teacher['name']}"
 ```
-→ Chỉ gồm **tên** (đã sort), **không gồm bội số**. Cùng combo dù bội số khác nhau = cùng pattern. Đây là quyết định thiết kế then chốt để pattern tích lũy nhanh.
+→ Chỉ gồm **tên** (đã sort), **không gồm bội số**. Vẫn được lưu vào DB khi `save_round` làm **metadata** (kèm index), nhưng **predictor không còn dùng** — tầng pattern đã bỏ 2026-07-20 (xem mục 9).
 
 ## 4. Thuật toán dự đoán (predictor.py)
 
-3 tầng, tự chọn theo lượng dữ liệu. Hàm chính: `predict(monsters, teacher)` → dict gồm `method`, `probabilities`, `recommendation`, `best_value` (EV), `details`, `message`.
+2 tầng, tự chọn theo lượng dữ liệu. Hàm chính: `predict(monsters, teacher)` → dict gồm `method`, `probabilities`, `recommendation`, `best_value` (EV), `confidence`, `details`, `message`.
 
 ### Bước nền: xác suất implied từ bội số
 `_implied_prob`: chuẩn hóa `1/odds` trên toàn bộ 5 nhân vật → `q[name]`. Bội số thấp → q cao.
 
-### Tầng 1 — Pattern (`method="pattern"`)
-Điều kiện: số trận **cùng pattern_key** ≥ `MIN_SAMPLES_FOR_PATTERN` (=3).
-- Đếm số lần mỗi tên thắng trong các trận cùng combo.
-- **Bayesian smoothing** với prior = bội số: `prob = (observed_wins + q*pseudo) / (n + pseudo)`, `pseudo=3`. Rồi normalize.
-
-### Tầng 2 — Thống kê cá nhân + calibration theo BỘI SỐ (`method="individual"`)
+### Tầng 1 — Thống kê cá nhân + calibration theo BỘI SỐ (`method="individual"`)
 Điều kiện: tổng trận có kết quả trong DB ≥ 10. **Shrinkage Beta-Binomial PHÂN TẦNG**, từ thô đến tinh (mỗi tầng là prior cho tầng kế, kéo về nhau theo số mẫu — hàm `_shrink`):
 
 ```
@@ -106,27 +101,29 @@ return "|".join(sorted_names) + f"|T:{teacher['name']}"
 ```
 
 > Giá trị K mặc định trong [config.py](config.py) (25 / 3 / 0) bị `tuned_params.json`
-> ghi đè nếu có. Bộ đang dùng (tune theo **ROI** 2026-06): `INDIVIDUAL=40`,
-> `ODDS=2`, `NAME_ODDS=10` — xem [tune_shrinkage.py](tune_shrinkage.py).
+> ghi đè nếu có. Tune theo **logloss walk-forward** (đổi từ ROI 2026-07-20, xem
+> mục 9) — chạy `python tune_shrinkage.py` hoặc nút trên web sau khi thêm data.
 
 - **Tầng giá trị bội** (mới) gộp mọi tên cùng một giá trị bội → đủ mẫu, ổn định. Đây là chỗ bắt trực giác "bội X hay/không hay về": vd bội 5 thắng ~38%, bội 10 thắng 0/21, **thầy bội ≥18 hay thoát** (1/odds không thấy được điều này). Bảng lấy từ `get_monster_odds_winrate` / `get_teacher_odds_winrate`.
 - **Tầng tên** kéo về tầng giá trị bội (thay vì kéo thẳng về odds như bản cũ): nhân vật ít mẫu sẽ mượn calibration của bội số nó đang mang.
-- **Tầng (tên × bội)**: từng mặc định TẮT (`NAME_ODDS_STRENGTH=0`) vì ở ~77 trận tối ưu logloss thì bật vào bị overfit. Nhưng từ khi **tiêu chí tune đổi sang ROI** (xem dưới), tuner tự bật (`NAME_ODDS=10`) vì nó cải thiện ROI — cơ chế auto-ready hoạt động đúng như thiết kế.
-- Đã xác nhận qua [backtest.py](backtest.py): tầng calibration theo bội giảm logloss 1.532 → **1.504** (so odds-only 1.571), brier/pwin/top1 đều tốt hơn bản chỉ-theo-tên. Quét K bằng [tune_shrinkage.py](tune_shrinkage.py).
+- **Tầng (tên × bội)**: mặc định TẮT (`NAME_ODDS_STRENGTH=0`) — ô (tên×bội) chỉ ~2–4 mẫu nên bật vào làm logloss tệ hơn. Vẫn nằm trong lưới quét ("auto-ready"): khi data đủ dày để tầng này cải thiện logloss, tuner tự bật. (Giai đoạn tune-theo-ROI 2026-06→07 nó từng bị bật `NAME_ODDS=10` — hoá ra là overfit theo nhiễu ROI, xem mục 9.)
+- Đã xác nhận qua [backtest.py](backtest.py): tầng calibration theo bội giảm logloss so với bản chỉ-theo-tên và tốt hơn odds-only. Quét K bằng [tune_shrinkage.py](tune_shrinkage.py).
 - Hiển thị: cột **"Bội này về"** (web) và "· bội này về X%" (Telegram) cho thấy tỷ lệ thắng thực tế của giá trị bội đó.
 
-> **Tiêu chí tune đổi từ logloss → ROI/EV** ([tune_shrinkage.py](tune_shrinkage.py)): mỗi
-> tổ hợp K được mô phỏng cược 1 đơn vị/trận vào nhân vật có EV cao nhất (walk-forward),
-> chọn bộ **ROI cao nhất** thay vì logloss thấp nhất. Lý do: logloss đo calibration,
-> không đo trực tiếp lợi nhuận — bộ logloss tốt nhất có thể KHÔNG phải bộ kiếm tiền
-> tốt nhất. `tuned_params.json` ghi thêm `_meta.roi_ev` và `optimized_by="roi_ev"`.
+> **Tiêu chí tune = logloss walk-forward** ([tune_shrinkage.py](tune_shrinkage.py)):
+> chọn bộ K có logloss thấp nhất khi mỗi trận chỉ học từ các trận trước. ROI
+> (cược 1 đơn vị/trận vào con EV dự đoán cao nhất) vẫn được tính và ghi vào
+> `_meta.roi_ev` kèm **CI 95% bootstrap** (`_meta.roi_ci95`) nhưng CHỈ để tham
+> khảo. Lịch sử: 2026-06 đổi logloss→ROI với lý do "logloss không đo lợi nhuận";
+> 2026-07-20 đổi ngược lại vì phát hiện winner's curse (mục 9).
 
-### Tầng 3 — Chỉ odds (`method="multiplier"`)
+### Tầng 2 — Chỉ odds (`method="multiplier"`)
 Khi DB < 10 trận: dùng thẳng `q` (xác suất implied từ bội số).
 
 ### Đầu ra phụ
 - **Recommendation** = argmax xác suất.
 - **Best value (EV)** = argmax `prob × odds`. Nếu khác recommendation thì hiển thị riêng (cơ hội "giá trị" — xác suất vừa phải nhưng bội số cao).
+- **Confidence** (`cao`/`trung binh`/`thap`): theo số mẫu của **tầng bội** — mức tin cậy do nhân vật mỏng mẫu nhất quyết định (thường là thầy: mỗi giá trị bội thầy chỉ ~10–30 trận). `trung binh` khi min(odds_appeared) ≥ 15 và tổng ≥ 100 trận; `cao` khi ≥ 50 và ≥ 300 (chưa đạt được với data hiện tại — chủ đích, nhãn phải trung thực).
 - `format_prediction_text()` dựng Markdown cho Telegram (bar chart `█`, `[won/appeared]`).
 
 ## 5. Luồng Telegram (telegram_bot.py)
@@ -146,7 +143,7 @@ Khi DB < 10 trận: dùng thẳng `q` (xác suất implied từ bội số).
 5 "tab" (thực chất là `st.radio(horizontal=True)` + `if/elif`, KHÔNG dùng `st.tabs` — lý do ở mục 9 "cả 5 tab chạy lại trên MỌI tương tác"; chỉ code của mục đang chọn mới thực thi mỗi rerun):
 - **Dự đoán**: nhập tay theo đúng cấu trúc game — **2 con bội THẤP (3–5) + 2 con bội CAO (6–12)** tách 2 nhóm cột. Cả **tên lẫn bội đều dùng `st.segmented_control` (nút 1 chạm, không dropdown)** để nhập nhanh nhất. Tên yêu quái: options đã LỌC SẴN theo nhóm — `LOW_MONSTERS` (9 con cố định, **sắp xếp ABC**: Bach_tuong, Dai_bang_kim_si, Hoang_mi_vuong, Hong_hai_nhi, Lao_ban, Loc_dai_tien, Thanh_nguu, Thanh_su, Xich_vy_ma_hat) cho 2 slot thấp, phần bù `HIGH_MONSTERS` (9 con còn lại, suy ra bằng list-comprehension để không lặp danh sách, cũng **theo ABC** vì lấy từ `sorted(KNOWN_MONSTERS)`) cho 2 slot cao — đỡ dò cả 18 con, hiển thị qua `format_func=display_name` (bỏ gạch dưới) thay vì hằng số thô. Cả tên và bội đều **không cho trùng trong cùng nhóm** bằng chung 1 cơ chế: hàm `_avoid_clash(primary_key, secondary_key, options)` — slot phụ (lo1/hi1) lọc bỏ giá trị slot chính (lo0/hi0) khỏi options trước khi render, còn callback `on_change` gắn ở slot chính tự đẩy slot phụ sang giá trị khác nếu người dùng đổi slot chính trùng slot phụ (tránh crash "value not in options" khi Streamlit rerun) — dùng chung cho cả 4 cặp (tên thấp, bội thấp, tên cao, bội cao). + **bội Thầy** `number_input` (tên Thầy cố định `Duong_tang`, đã bỏ selectbox chọn tên). Đã **bỏ `st.form`**: các query nặng dùng ở đầu trang đã `@st.cache_data` nên rerun mỗi lần chọn không tốn round-trip Turso — không cần chặn rerun bằng form nữa, đổi lại đủ khả năng lọc option động theo lựa chọn của widget khác (form chặn điều này vì widget trong form không rerun tới khi submit). Nút **🆕 Nhập trận mới** xoá các key widget để nhập trận kế nhanh. Trang cũng bỏ `st.title()` ở đầu (chiếm nhiều diện tích, sidebar + `st.header` mỗi tab đã đủ ngữ cảnh). Kết quả render qua hàm `render_prediction(state)` và **lưu trong `st.session_state["pred"]` nên sống qua mọi rerun** (không biến mất khi bấm nút khác). Dẫn đầu bằng **kèo giá trị EV** (ưu tiên value betting) + kèo an toàn; bảng dùng `ProgressColumn`, biểu đồ trong expander. **Nút ghi người thắng nằm ngay dưới kết quả** (không cần đổi tab). Chặn 4 yêu quái trùng tên. **Chống bấm trùng tạo rác**: bấm "Dự đoán ngay" lại với đúng combo (4 yêu quái+bội+thầy) như lần trước và trận đó chưa ghi KQ → tái dùng `round_id` cũ thay vì `save_round` thêm bản ghi "chờ KQ" mới (so khớp qua `sig` lưu trong `st.session_state["pred"]`).
 - **Nhập kết quả**: fallback cho trận cũ còn sót (dropdown → radio).
-- **Thống kê**: metric + pie + bar + bảng + **Odds Calibration** (≥20 trận) + **Phân tích chiến lược cược (ROI)** (≥15 trận): so ROI các chiến lược (bội nhỏ/to, thầy theo ngưỡng odds) + bảng win-rate/EV theo từng giá trị bội (qua `strategy_analysis.compute_*`), kèm cảnh báo variance. **2 dòng "Theo mô hình"** (LOO + lọc theo ngưỡng EV qua slider): leave-one-out tốn ~chục giây nên kết quả `compute_model_picks()` được **lưu ra đĩa** `model_picks_cache.json` (`save/load_model_picks_cache`, gắn `n_rounds` + tham số tune). Mở web → nếu cache còn khớp thì **LOAD ngay như tuned_params** (không tính lại, kể cả sau khi restart app); chỉ khi thêm trận / đổi tham số (cache lỗi thời) mới hiện nút bấm tính lại 17s rồi ghi đè cache. Kéo slider chỉ re-`aggregate` (tức thì). **Tinh chỉnh mô hình**: nút chạy [tune_shrinkage.py](tune_shrinkage.py) (subprocess, thanh tiến độ) + hiển thị `ind_k/odds_k/name_odds_k` và **ROI/trận** từ `tuned_params.json`.
+- **Thống kê**: metric + pie + bar + bảng + **Odds Calibration** (≥20 trận) + **Phân tích chiến lược cược (ROI)** (≥15 trận): so ROI các chiến lược (bội nhỏ/to, thầy theo ngưỡng odds) + bảng win-rate/EV theo từng giá trị bội (qua `strategy_analysis.compute_*`), kèm cảnh báo variance. **2 dòng "Theo mô hình"** (LOO + lọc theo ngưỡng EV qua slider): leave-one-out tốn ~chục giây nên kết quả `compute_model_picks()` được **lưu ra đĩa** `model_picks_cache.json` (`save/load_model_picks_cache`, gắn `n_rounds` + tham số tune). Mở web → nếu cache còn khớp thì **LOAD ngay như tuned_params** (không tính lại, kể cả sau khi restart app); chỉ khi thêm trận / đổi tham số (cache lỗi thời) mới hiện nút bấm tính lại 17s rồi ghi đè cache. Kéo slider chỉ re-`aggregate` (tức thì). **Tinh chỉnh mô hình**: nút chạy [tune_shrinkage.py](tune_shrinkage.py) (subprocess, thanh tiến độ) + hiển thị `ind_k/odds_k/name_odds_k`, logloss (tiêu chí chọn) và **ROI/trận kèm CI 95%** (chỉ tham khảo) từ `tuned_params.json`; cảnh báo nếu file còn `optimized_by` cũ (ROI).
 - **Soi cầu**: thống kê kiểu xổ số cho yêu quái **bội cao (≥9)** + **Thầy**. Yêu quái: `db.get_high_odds_appearances(9)` — 1 query UNION 4 slot trả **mọi lần ra sân ở bội≥9** kèm `won` + `round_id`, `ORDER BY round_id` (thứ tự thời gian). Thầy (**trường hợp đặc biệt**): `db.get_teacher_appearances()` — Thầy có mặt **MỌI trận** và bội ở thang riêng (**14–26**) nên KHÔNG áp bộ lọc bội≥9 lẫn ngưỡng mẫu; đơn vị "đang khan"/"chu kỳ" của Thầy là **số TRẬN** (yêu quái là **số lần ra sân bội≥9**). Cả 2 bọc `@st.cache_data` (`_cached_high_odds_appearances`, `_cached_teacher_appearances`, đã thêm vào `_bust_data_cache`). Công thức chung ở helper `_soi_cau_metrics(apps)` (chuỗi lần xuất hiện đã sắp thời gian → đang khan/chu kỳ/trạng thái). Radio **phạm vi bội** (Gộp 9–12 / Chỉ 9 / Chỉ 10–12) chỉ **lọc yêu quái** ở Python (không đụng Thầy) — KHÔNG tách bảng theo tên×bội (255 trận ÷ 36 ô quá thưa để "chu kỳ về" có nghĩa; luôn gom **theo tên**). Với mỗi nhân vật: **Đang khan** = số lần SAU lần về/thoát gần nhất (chưa lặp lại), **Chu kỳ TB** = Xuất hiện ÷ Về (trung bình bao nhiêu lần thì về 1), **Lần về gần nhất** (ngày). Trạng thái 🔥 quá hạn (khan ≥ chu kỳ) / 🟡 tới hạn (≥70%) / ⚪ bình thường / ❓ chưa từng về. **Thầy luôn đứng đầu bảng** (đơn vị khác nên không trộn thứ hạng); yêu quái (đủ `min_app` lần) sort **khan giảm dần**. `ProgressColumn` cho tỉ lệ về. Có cảnh báo rõ đây là **gambler's fallacy** (game ngẫu nhiên, "quá hạn" không đảm bảo về) — chỉ tham khảo.
 - **Lịch sử**: bảng 200 trận gần nhất.
 
@@ -174,7 +171,12 @@ Dừng tiến trình trong terminal: **Ctrl+C**.
 
 ## 9. Quyết định thiết kế & các lỗi đã xử lý (lessons learned)
 
-- **Pattern key chỉ theo tên (bỏ odds)** — bản đầu gồm odds khiến pattern gần như không bao giờ trùng. Đổi sang tên-only để tích lũy nhanh.
+- **Bỏ tầng pattern + đổi tiêu chí tune ROI→logloss (review thống kê 2026-07-20, trên 279 trận):**
+  - **Tune theo ROI bị winner's curse**: ROI mỗi cược có độ lệch chuẩn ~3 đơn vị (thắng bội 9 = +8, thua = −1) → sai số chuẩn của ROI trên ~270 trận là ~±0.2, LỚN HƠN chênh lệch ROI giữa 80 combo trong lưới quét (sd ~0.11). Chọn max ROI = chọn nhiễu. Bằng chứng: bộ (40/2/10) chọn theo ROI cho logloss walk-forward **1.4707, tệ hơn cả odds-only (1.4552)**; mọi combo `name_odds=0` đều tốt hơn (~1.442–1.444). Con số "ROI +54.6%" từng hiển thị là ước lượng thổi phồng (bias chọn lọc + không có CI). → Đổi tiêu chí về **logloss** (ổn định, đo calibration trực tiếp); ROI chỉ report kèm **CI 95% bootstrap**.
+  - **Tầng pattern vô dụng cả lý thuyết lẫn thực nghiệm**: 199 pattern key khác nhau / 279 trận, walk-forward chỉ kích hoạt 6/269 lần; tắt đi logloss không đổi, ROI còn tăng (+0.47→+0.54). Với cấu trúc 2 thấp + 2 cao có C(9,2)²=1296 combo khả dĩ → pattern ≥3 mẫu mãi mãi hiếm, và không có cơ chế game nào khiến tổ hợp TÊN (bỏ qua bội) mang tín hiệu vượt trên từng con + bội. → Xoá tier khỏi predictor (`pattern_key` vẫn lưu DB làm metadata); rule confidence đổi từ "pattern n≥5 = cao" (chỗ kém tin cậy nhất lại nhãn cao nhất) sang theo số mẫu tầng bội.
+  - **Tín hiệu thật nằm ở tầng BỘI**: bội 5 về 36% vs implied 20% (z=5.3); bội 9 về 21% vs 11% (z=2.95); thầy 14–17 **0/76 thoát**, toàn bộ 16 lần thoát đều ở bội ≥18. Overround trung bình 0.81 (<1): paytable trả hào phóng hơn 1/odds, bù bằng thầy-bội-thấp không bao giờ thoát. Tín hiệu theo TÊN đa phần ăn ké hiệu ứng bội (các con z~2.5 đều hay mang bội 5; 18 tên = multiple comparisons).
+  - **Dọn 3 trận dữ liệu lỗi** (id 328: 4 con cùng bội 5; id 163: sai cấu trúc; id 67: double-submit trùng id 66 cùng giây) → còn 276 trận sạch.
+- **Pattern key chỉ theo tên (bỏ odds)** — bản đầu gồm odds khiến pattern gần như không bao giờ trùng. Đổi sang tên-only để tích lũy nhanh. (Từ 2026-07-20 chỉ còn là metadata — xem mục trên.)
 - **Windows cp1252**: `print()` có emoji gây `UnicodeEncodeError`. → mọi `print()` trong `main.py`/`tune_shrinkage.py` dùng ASCII (`[OK]`, `->`). Emoji **chỉ** dùng trong message Telegram/Streamlit (UTF-8), không dùng trong stdout.
 - **asyncio trong thread**: bot chạy ở daemon thread cần `asyncio.set_event_loop(asyncio.new_event_loop())` đầu `run_bot()` ([main.py:20](main.py#L20)).
 - **Telegram Conflict** (`terminated by other getUpdates`): chỉ được chạy **một** instance bot. Nếu lỗi → tắt tiến trình Python thừa.
@@ -197,7 +199,10 @@ Dừng tiến trình trong terminal: **Ctrl+C**.
 
 ## 10. Việc còn lại / hướng mở rộng
 
-- Đặt `ALLOWED_CHAT_ID` trong `.env` (lấy từ @userinfobot).
-- Revoke + thay token Telegram (token cũ từng lộ trong log) qua @BotFather.
-- Tích lũy thêm dữ liệu để pattern tier kích hoạt nhiều hơn (hiện chủ yếu chạy tier "individual").
+(Đã xong 2026-07-20: revoke token Telegram, đặt `ALLOWED_CHAT_ID`, tune theo logloss, bỏ pattern tier.)
+
+- **Refactor "load 1 lần, predictor pure function"** (đề xuất review 2026-07-20): với <1000 trận, load cả bảng `rounds` 1 query rồi tính mọi thống kê trong Python — xoá ~8 hàm SQL UNION, predictor thành pure function (dễ test), backtest/tune không cần tráo `db.DATABASE_PATH` (hết hẳn hazard replay-leak), tune 80 combo chạy ~vài giây thay vì ~10 phút.
+- **Chuyển `tuned_params` + `model_picks_cache` vào bảng key-value trên Turso**: Streamlit Cloud không có đĩa bền nên 2 file JSON này lỗi thời/lệch giữa PC và Cloud; để trong DB thì 2 bên luôn thấy cùng giá trị → mở khoá auto-retune khi có +10–20 trận mới.
+- **Gợi ý mức cược ¼-Kelly** (từ p và odds, có cap) thay cho chữ "cược nhẹ"; hiển thị khoảng bất định cho kèo khuyến nghị.
 - Theo dõi hạn mức free tier Turso (hiện dùng không đáng kể so với hạn mức) và tình trạng project Streamlit Cloud có bị "ngủ" sau 12h không truy cập hay không.
+- Theo dõi edge bội 5 (đang suy giảm: nửa đầu data ROI +125%, nửa sau +42%) — nếu game đổi paytable/cân bằng lại, các tín hiệu theo bội sẽ dịch chuyển.

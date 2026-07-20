@@ -23,20 +23,19 @@ Mục tiêu của hệ thống: **dự đoán nhân vật nào có khả năng t
 
 ## 3. Yêu cầu chức năng
 
-### FR1 — Dự đoán theo pattern lịch sử
-- Khi **cùng một combo 4 yêu quái + thầy** xuất hiện lại (bất kể bội số thay đổi), dùng kết quả các trận lịch sử cùng combo để dự đoán.
-- Pattern được nhận diện theo **tên nhân vật, KHÔNG theo bội số** (bội số mỗi trận có thể khác nhau nhưng combo vẫn là một).
+### FR1 — Dự đoán theo thống kê lịch sử
+- Khi đã đủ dữ liệu (≥10 trận có kết quả), dùng **thống kê thắng/xuất hiện** của từng nhân vật + từng **giá trị bội** trong toàn bộ lịch sử để ước lượng xác suất.
+- ~~Dự đoán theo pattern cùng combo 4 yêu quái~~ — **đã bỏ (2026-07-20)**: với 18 yêu quái, tổ hợp lặp lại quá hiếm để đủ mẫu (199 pattern khác nhau / 279 trận); đo thực tế tầng này không cải thiện dự đoán. `pattern_key` vẫn được lưu trong DB làm metadata.
 
-### FR2 — Dự đoán khi chưa có pattern
-- Nếu chưa đủ số mẫu cùng combo, dùng **thống kê thắng/xuất hiện của từng nhân vật** trong toàn bộ lịch sử.
-- Nếu vẫn chưa đủ dữ liệu, dùng **bội số** để ước tính (bội số thấp → xác suất cao hơn).
+### FR2 — Dự đoán khi chưa có dữ liệu
+- Nếu chưa đủ dữ liệu lịch sử, dùng **bội số** để ước tính (bội số thấp → xác suất cao hơn).
 
 ### FR3 — Đầu ra dự đoán
 Với mỗi trận, hệ thống trả về:
 - **Xác suất % cho từng nhân vật** (5 nhân vật, tổng = 100%).
 - **Khuyến nghị**: nhân vật có xác suất cao nhất.
 - **Giá trị kỳ vọng (Expected Value = xác suất × bội số)** và nhân vật có EV tốt nhất.
-- Phương pháp đã dùng (pattern / cá nhân / odds) + số mẫu.
+- Phương pháp đã dùng (thống kê cá nhân / odds) + số mẫu + độ tin cậy (theo số mẫu của tầng bội).
 - Lịch sử [thắng/xuất hiện] của từng nhân vật.
 
 ### FR4 — Bot Telegram
@@ -76,10 +75,11 @@ Với mỗi trận, hệ thống trả về:
 - Không multi-user / không mobile app riêng.
 - Không đảm bảo thắng — đây là công cụ hỗ trợ thống kê, kết quả game có yếu tố ngẫu nhiên.
 
-## 7. Trạng thái hiện tại (tính đến 2026-07-02)
+## 7. Trạng thái hiện tại (tính đến 2026-07-20)
 
 - ✅ Database, predictor, Telegram bot, Web UI: hoạt động.
 - ✅ Web UI deploy lên Streamlit Community Cloud, dùng chung database Turso với bot Telegram trên PC — ghi/đọc từ xa hoạt động đúng (test: ghi kết quả qua Web Cloud, đọc thấy ngay từ script khác dùng cùng database).
-- ⏳ Cần đặt `ALLOWED_CHAT_ID` trong `.env` (lấy từ @userinfobot).
-- ⏳ Token Telegram từng bị lộ trong log → nên revoke qua @BotFather và thay token mới.
+- ✅ `ALLOWED_CHAT_ID` đã đặt trong `.env`.
+- ✅ Token Telegram (từng bị lộ trong log) đã revoke và thay mới (2026-07-20).
+- ✅ Review thống kê 2026-07-20: bỏ tầng pattern, đổi tiêu chí tune sang logloss, ROI hiển thị kèm CI 95% — xem SOLUTION.md mục 9.
 - ℹ️ Chức năng **upload ảnh (OCR)** và **import CSV** đã được gỡ bỏ (2026-07-13) — chỉ còn nhập tay. Dữ liệu nhập qua Web/Telegram thủ công.

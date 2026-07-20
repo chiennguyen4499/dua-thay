@@ -126,7 +126,10 @@ def _stats_ev_section() -> str:
                 f"tên×bội={tp.get('NAME_ODDS_STRENGTH','?')}\n")
         roi_wf = meta.get("roi_ev")
         if isinstance(roi_wf, (int, float)):
-            out += f"📈 ROI/trận (walk-forward, tiêu chí tune): {roi_wf*100:+.0f}%\n"
+            ci = meta.get("roi_ci95")
+            ci_str = (f" (CI 95% [{ci[0]*100:+.0f}%, {ci[1]*100:+.0f}%])"
+                      if isinstance(ci, list) and len(ci) == 2 else "")
+            out += f"📈 ROI/trận (walk-forward, tham khảo): {roi_wf*100:+.0f}%{ci_str}\n"
     except (OSError, ValueError):
         pass
 

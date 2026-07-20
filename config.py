@@ -45,7 +45,6 @@ ALLOWED_CHAT_ID = os.getenv("ALLOWED_CHAT_ID", "")
 _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 _db_path = os.getenv("DATABASE_PATH", "data/rounds.db")
 DATABASE_PATH = _db_path if os.path.isabs(_db_path) else os.path.join(_PROJECT_ROOT, _db_path)
-MIN_SAMPLES_FOR_PATTERN = int(os.getenv("MIN_SAMPLES_FOR_PATTERN", "3"))
 
 # Turso (database online dùng chung giữa bot trên PC và Web UI trên Streamlit
 # Cloud). Để trống 2 biến này thì hệ thống tự dùng SQLite local (DATABASE_PATH)

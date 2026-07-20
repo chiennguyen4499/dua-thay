@@ -144,8 +144,7 @@ with st.sidebar:
 
 # ─── Helper: render 1 kết quả dự đoán (sống qua rerun + ghi KQ tại chỗ) ──
 METHOD_INFO = {
-    "pattern":    ("🟢", "Pattern lịch sử"),
-    "individual": ("🟡", "Thống kê cá nhân"),
+    "individual": ("🟢", "Thống kê cá nhân"),
     "multiplier": ("🔴", "Ước tính theo odds"),
 }
 CONF_BADGE = {"cao": "🟢 Tin cậy cao", "trung binh": "🟡 Tin cậy TB", "thap": "🔴 Tin cậy thấp"}
@@ -730,13 +729,14 @@ elif active_tab == TAB_LABELS[2]:
     st.subheader("⚙️ Tinh chỉnh mô hình")
     st.caption(
         "Chạy `tune_shrinkage.py`: quét lại các tham số shrinkage (ind_k, odds_k, "
-        "name_odds_k), chọn bộ có **ROI cao nhất** (EV tối đa khi mỗi trận cược bằng "
-        "nhau vào nhân vật có EV dự đoán cao nhất) và ghi vào `tuned_params.json`. "
-        "Tầng **tên×bội** nằm trong lưới quét — khi đủ mẫu nó sẽ tự được bật. Nên "
-        "chạy lại sau mỗi lần thêm/nhập dữ liệu mới."
+        "name_odds_k), chọn bộ có **logloss walk-forward thấp nhất** (calibration "
+        "tốt nhất) và ghi vào `tuned_params.json`. ROI vẫn được tính kèm **CI 95%** "
+        "nhưng chỉ để tham khảo — ROI mỗi cược nhiễu ±3 đơn vị nên chọn tham số theo "
+        "ROI là chọn nhiễu (winner's curse). Tầng **tên×bội** nằm trong lưới quét — "
+        "khi đủ mẫu nó sẽ tự được bật. Nên chạy lại sau mỗi lần thêm dữ liệu mới."
     )
     st.caption(
-        "📐 *Tinh chỉnh dùng ROI **walk-forward** (mỗi trận chỉ học từ trận trước) — "
+        "📐 *Tinh chỉnh dùng **walk-forward** (mỗi trận chỉ học từ trận trước) — "
         "đúng chuẩn chọn tham số cho chuỗi thời gian, tránh nhìn lén tương lai. Khác "
         "với bảng \"Theo mô hình\" phía trên dùng **leave-one-out** để báo cáo chất "
         "lượng — nên 2 con số ROI có thể lệch nhau, đó là bình thường.*"
@@ -756,25 +756,33 @@ elif active_tab == TAB_LABELS[2]:
             help="0 = tầng tên×bội đang TẮT (chưa đủ mẫu). >0 = đã tự bật.",
         )
         _roi = _meta.get("roi_ev")
+        _ci = _meta.get("roi_ci95")
+        _ci_str = (f"CI 95% [{_ci[0]:+.0%}, {_ci[1]:+.0%}]"
+                   if isinstance(_ci, list) and len(_ci) == 2 else "")
         pc4.metric(
             "ROI/trận (walk-forward)",
             f"{_roi:+.1%}" if isinstance(_roi, (int, float)) else "—",
             help="Lời/lỗ trung bình mỗi trận khi cược 1 đơn vị vào nhân vật có EV "
-                 "dự đoán cao nhất, tính WALK-FORWARD. Đây là tiêu chí chọn bộ tham "
-                 "số (khác ROI leave-one-out ở bảng phía trên). Lưu ý: rất nhiễu với "
-                 "ít dữ liệu, không đảm bảo tương lai.",
+                 "dự đoán cao nhất, tính WALK-FORWARD — CHỈ THAM KHẢO, không phải "
+                 "tiêu chí chọn tham số (tiêu chí là logloss). ROI mỗi cược nhiễu "
+                 "±3 đơn vị nên hãy nhìn CI 95% ở dòng dưới thay vì con số điểm.",
         )
         if _meta:
-            _roi_str = f"ROI {_roi:+.4f}/trận · " if isinstance(_roi, (int, float)) else ""
+            _roi_str = (f"ROI {_roi:+.1%}/trận" + (f" · {_ci_str}" if _ci_str else "") + " · "
+                        if isinstance(_roi, (int, float)) else "")
             st.caption(
                 f"Bộ tham số hiện tại — quét trên {_meta.get('rounds_evaluated','?')} trận · "
-                f"{_roi_str}(tiêu chí chọn: ROI cao nhất)."
+                f"{_roi_str}(tiêu chí chọn: **logloss thấp nhất** = {_meta.get('logloss','?')})."
             )
             st.caption(
-                f"Chỉ số phụ — logloss {_meta.get('logloss','?')} · "
-                f"brier {_meta.get('brier','?')} · "
+                f"Chỉ số phụ — brier {_meta.get('brier','?')} · "
                 f"top1 {_meta.get('top1','?')}/{_meta.get('rounds_evaluated','?')}."
             )
+            if _meta.get("optimized_by") != "logloss":
+                st.warning(
+                    "⚠️ `tuned_params.json` hiện tại được chọn theo tiêu chí ROI cũ "
+                    "(dễ overfit). Bấm **Chạy tinh chỉnh ngay** để chọn lại theo logloss."
+                )
     except (OSError, ValueError):
         st.info("Chưa có `tuned_params.json` — bấm nút dưới để tạo lần đầu (đang dùng giá trị mặc định).")
 

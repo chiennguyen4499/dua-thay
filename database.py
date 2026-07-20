@@ -204,15 +204,6 @@ def delete_round(round_id: int, only_pending: bool = True) -> bool:
         return cur.rowcount > 0
 
 
-def get_rounds_by_pattern(pattern_key: str) -> list[dict]:
-    with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT * FROM rounds WHERE pattern_key=? AND winner IS NOT NULL ORDER BY created_at DESC",
-            (pattern_key,)
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
 def get_all_rounds_with_winner() -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(
