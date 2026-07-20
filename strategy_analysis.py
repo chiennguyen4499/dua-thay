@@ -11,14 +11,13 @@ Thuoc do quan trong nhat = ROI: cuoc 1 don vi/tran.
   - ROI = tong_lai / so_lan_cuoc.  ROI > 0 = co lai.
 """
 
-import os
-import json
-
 import database as db
 
-# Cache LOO ra ĐĨA (giống tuned_params.json): web chỉ LOAD thay vì tính lại
-# mỗi lần khởi động. Hết hạn khi SỐ TRẬN hoặc THAM SỐ TUNE đổi (kết quả sẽ khác).
-_PICKS_CACHE = os.path.join(os.path.dirname(__file__), "model_picks_cache.json")
+# Cache LOO nay LUU TRONG TURSO (bang meta), KHONG con file JSON local (2026-07-20).
+# Ly do: Streamlit Cloud khong co dia ben nen file local loi thoi/lech giua PC va
+# Cloud. Meta dung chung -> ca 2 noi thay cung ket qua. LOO gio ~1.2s (predictor
+# la pure function) nen tinh lai cung re; cache chi de khoi tinh lai moi rerun.
+# Het han khi SO TRAN hoac THAM SO TUNE doi.
 
 
 def _current_params():
@@ -29,23 +28,21 @@ def _current_params():
 
 
 def save_model_picks_cache(picks, n_rounds):
-    """Ghi kết quả LOO (picks) + số trận + tham số ra file để lần sau chỉ load."""
+    """Ghi kết quả LOO (picks) + số trận + tham số vào bảng meta (Turso, dùng chung)."""
     try:
-        with open(_PICKS_CACHE, "w", encoding="utf-8") as f:
-            json.dump({"n_rounds": n_rounds, "params": _current_params(),
-                       "picks": picks}, f)
-    except OSError:
+        db.set_meta("model_picks", {"n_rounds": n_rounds,
+                                    "params": _current_params(), "picks": picks})
+    except Exception:
         pass
 
 
 def load_model_picks_cache(n_rounds):
-    """Đọc cache LOO nếu CÒN HỢP LỆ (đúng số trận VÀ đúng tham số). Lỗi thời → None."""
+    """Đọc cache LOO từ meta nếu CÒN HỢP LỆ (đúng số trận VÀ đúng tham số). Lỗi thời → None."""
     try:
-        with open(_PICKS_CACHE, encoding="utf-8") as f:
-            d = json.load(f)
-        if d.get("n_rounds") == n_rounds and d.get("params") == _current_params():
+        d = db.get_meta("model_picks")
+        if d and d.get("n_rounds") == n_rounds and d.get("params") == _current_params():
             return d["picks"]
-    except (OSError, ValueError):
+    except Exception:
         pass
     return None
 
@@ -153,6 +150,57 @@ STRATEGIES = [
 def compute_strategies(rounds):
     """Trả về list dict: {label, bets, wins, hit_rate, roi, profit} cho mỗi chiến lược."""
     return [{"label": lbl, **_run_strategy(rounds, fn)} for lbl, fn in STRATEGIES]
+
+
+def _bootstrap_ci(gains, b=2000, seed=13):
+    """CI 95% cho ROI trung bình bằng bootstrap (ROI mỗi cược nhiễu mạnh)."""
+    import random
+    if not gains:
+        return (0.0, 0.0)
+    rng = random.Random(seed)
+    n = len(gains)
+    means = sorted(sum(gains[rng.randrange(n)] for _ in range(n)) / n for _ in range(b))
+    return (means[int(0.025 * b)], means[int(0.975 * b)])
+
+
+def compute_heuristic_summary(rounds, min_appear=20):
+    """Tự TÍNH các kèo heuristic theo BỘI từ data sống (thay cho ghi chú viết tay
+    hay bị lỗi thời). Trả dict:
+      - `odds_edges`: mỗi giá trị bội yêu quái đủ mẫu → roi + bootstrap CI, xếp
+        theo CẬN DƯỚI CI (ưu tiên kèo bền, phạt ăn may); `real=True` nếu CI>0.
+      - `teacher`: kèo "Thầy ≥18 → Thầy" → roi + CI.
+      - `n_rounds`.
+    Chủ đích CHỈ theo bội (không theo tên): 18 tên = nhiều so sánh → tên đa phần
+    chỉ ăn ké hiệu ứng bội, dễ ngộ nhận. Tín hiệu bội mới là thứ đáng tin."""
+    from collections import defaultdict
+    gains = defaultdict(list)
+    for rd in rounds:
+        for m in rd["monsters"]:
+            o = int(round(m["odds"]))
+            gains[o].append((o - 1) if rd["winner"] == m["slot"] else -1.0)
+    odds_edges = []
+    for o, g in gains.items():
+        if len(g) < min_appear:
+            continue
+        roi = sum(g) / len(g)
+        lo, hi = _bootstrap_ci(g)
+        wins = sum(1 for x in g if x > 0)
+        odds_edges.append({"odds": o, "n": len(g), "won": wins,
+                           "win_rate": wins / len(g), "roi": roi,
+                           "ci": (lo, hi), "real": lo > 0})
+    odds_edges.sort(key=lambda d: d["ci"][0], reverse=True)
+
+    tg = []
+    for rd in rounds:
+        if rd["teacher"]["odds"] >= 18:
+            tg.append((rd["teacher"]["odds"] - 1) if rd["winner"] == "teacher" else -1.0)
+    teacher = None
+    if tg:
+        lo, hi = _bootstrap_ci(tg)
+        teacher = {"thr": 18, "n": len(tg), "won": sum(1 for x in tg if x > 0),
+                   "win_rate": sum(1 for x in tg if x > 0) / len(tg),
+                   "roi": sum(tg) / len(tg), "ci": (lo, hi), "real": lo > 0}
+    return {"odds_edges": odds_edges, "teacher": teacher, "n_rounds": len(rounds)}
 
 
 def compute_model_picks(min_history=10):

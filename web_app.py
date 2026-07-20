@@ -31,6 +31,37 @@ def _init_db_once():
 _init_db_once()
 
 
+@st.cache_resource(show_spinner=False)
+def _sync_tuned_params_once():
+    """Kéo `tuned_params` từ Turso (bảng meta, dùng chung) về áp cho phiên web này.
+
+    Bot trên PC chạy tune → ghi meta. Web trên Cloud (đĩa ephemeral, file local là
+    bản git cũ) đọc meta lúc mở phiên: nếu khác bản đang dùng thì ghi đè file local
+    + reload config/predictor để dự đoán dùng ngay tham số mới — KHÔNG cần redeploy.
+    Chạy 1 lần/phiên (cache_resource). Lỗi mạng → bỏ qua, dùng file local sẵn có."""
+    import json as _json, importlib, config as _cfg, predictor as _pred
+    try:
+        meta_tp = db.get_meta("tuned_params")
+        if not meta_tp:
+            return
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tuned_params.json")
+        cur = None
+        try:
+            with open(path, encoding="utf-8") as f:
+                cur = _json.load(f)
+        except (OSError, ValueError):
+            cur = None
+        if cur != meta_tp:
+            with open(path, "w", encoding="utf-8") as f:
+                _json.dump(meta_tp, f, ensure_ascii=False, indent=2)
+            importlib.reload(_cfg)
+            importlib.reload(_pred)
+    except Exception:
+        pass
+
+_sync_tuned_params_once()
+
+
 # ─── Cache các truy vấn đọc dùng chung nhiều nơi ─────────────────────────
 # Streamlit chạy lại TOÀN BỘ script (cả 5 tab, kể cả tab không hiển thị)
 # trên MỌI tương tác (chọn 1 yêu quái, kéo slider...). Không cache thì mỗi
@@ -94,9 +125,9 @@ def _bust_data_cache():
     _cached_teacher_appearances.clear()
 
 
-@st.cache_data(show_spinner="Đang tính ROI mô hình (leave-one-out, ~chục giây)...")
+@st.cache_data(show_spinner=False)
 def _cached_model_picks(n_rounds_with_winner: int):
-    """LOO replay (TỐN KÉM ~chục giây) — cache theo SỐ TRẬN.
+    """LOO (~1.2s sau khi predictor thành pure function) — cache theo SỐ TRẬN.
 
     `n_rounds_with_winner` chỉ là khoá cache (phiên bản dữ liệu): khi thêm trận
     mới, số này đổi → tự tính lại; nếu không, mọi rerun (kéo slider, chuyển tab,
@@ -151,6 +182,82 @@ with st.sidebar:
         "→ Bot học dần, dự đoán tốt hơn."
     )
 
+def _set_state(key, value):
+    st.session_state[key] = value
+
+
+def _run_tune_with_progress():
+    """Chạy tune_shrinkage.py (subprocess) với thanh tiến độ, nạp lại tham số mới
+    cho phiên, lưu kết quả vào session_state['tune_result']. Dùng chung cho nút
+    bấm thủ công lẫn auto-retune tại mốc 50 trận."""
+    import subprocess, sys, importlib
+    from tune_shrinkage import TOTAL_COMBOS
+    import config as _cfg
+
+    progress = st.progress(0.0, text=f"Bắt đầu quét 0/{TOTAL_COMBOS} tổ hợp...")
+    log_box = st.empty()
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    proc = subprocess.Popen(
+        [sys.executable, "-u", "tune_shrinkage.py"],
+        cwd=os.path.dirname(os.path.abspath(__file__)),
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", bufsize=1, env=env,
+    )
+    lines, done = [], 0
+    for line in proc.stdout:
+        line = line.rstrip("\n")
+        lines.append(line)
+        tok = line.strip().split()
+        # Mỗi dòng dữ liệu (1 tổ hợp) bắt đầu bằng số (cột indK).
+        if tok and tok[0].lstrip("-").isdigit():
+            done += 1
+            progress.progress(min(done / TOTAL_COMBOS, 1.0),
+                              text=f"Đã quét {done}/{TOTAL_COMBOS} tổ hợp...")
+        log_box.code("\n".join(lines[-14:]), language="text")
+    proc.wait()
+    progress.empty()
+
+    reloaded = False
+    if proc.returncode == 0:
+        try:  # Nạp lại tham số mới cho phiên đang chạy (best-effort).
+            importlib.reload(_cfg)
+            importlib.reload(pred)
+            reloaded = True
+        except Exception:
+            reloaded = False
+    st.session_state["tune_result"] = {
+        "ok": proc.returncode == 0, "code": proc.returncode,
+        "stdout": "\n".join(lines), "stderr": "", "reloaded": reloaded,
+    }
+
+
+def _name_selector(label, options, key, sibling_key):
+    """Lưới nút chọn tên. Số nút LUÔN cố định (không lọc bớt) nên không nhảy
+    layout khi slot kia đã chọn; con đã chọn ở slot kia chỉ bị **disable** (mờ,
+    không bấm được) — nhờ vậy 2 slot cùng nhóm không bao giờ trùng tên mà vẫn
+    giữ nguyên vị trí các nút. Lựa chọn lưu ở st.session_state[key]."""
+    st.session_state.setdefault(key, None)
+    st.markdown(
+        f"<div style='font-size:.8rem;color:#808495;margin:.2rem 0'>{label}</div>",
+        unsafe_allow_html=True,
+    )
+    taken = st.session_state.get(sibling_key)
+    per_row = 3
+    for start in range(0, len(options), per_row):
+        chunk = options[start:start + per_row]
+        cols = st.columns(per_row)  # cố định per_row -> bề rộng nút ổn định
+        for col, opt in zip(cols, chunk):
+            with col:
+                is_sel = st.session_state[key] == opt
+                st.button(
+                    display_name(opt), key=f"{key}__{opt}", width="stretch",
+                    type="primary" if is_sel else "secondary",
+                    disabled=(opt == taken),
+                    on_click=_set_state, args=(key, opt),
+                )
+    return st.session_state[key]
+
+
 # ─── Helper: render 1 kết quả dự đoán (sống qua rerun + ghi KQ tại chỗ) ──
 METHOD_INFO = {
     "individual": ("🟢", "Thống kê cá nhân"),
@@ -178,17 +285,26 @@ def render_prediction(state):
     col1, col2 = st.columns(2)
     with col1:
         if ev_rec["expected_value"] > 1.05:
+            _rng = ""
+            if ev_rec.get("ev_low") is not None:
+                _rng = (f"\n\nKhoảng khả dĩ: EV **{ev_rec['ev_low']:.2f}–{ev_rec['ev_high']:.2f}** · "
+                        f"thắng {ev_rec['prob_low']*100:.0f}–{ev_rec['prob_high']*100:.0f}%")
             st.success(f"💰 **Kèo giá trị (ưu tiên)**\n\n"
-                       f"### {ev_rec['name']}\n"
+                       f"### {display_name(ev_rec['name'])}\n"
                        f"**{ev_rec['multiplier']:g}x** · EV **{ev_rec['expected_value']:.2f}** · "
-                       f"thắng ~{ev_rec['probability']*100:.0f}%")
-            st.caption("⚠️ Thắng ít, trả cao → variance lớn. Cược nhẹ.")
+                       f"thắng ~{ev_rec['probability']*100:.0f}%{_rng}")
+            _stake = ev_rec.get("stake_fraction", 0) or 0
+            if _stake > 0:
+                st.caption(f"💵 Mức cược gợi ý: **~{_stake*100:.1f}% vốn** (¼-Kelly, trần 5%). "
+                           "Thắng ít, trả cao → variance lớn.")
+            else:
+                st.caption("⚠️ Lợi thế mỏng → cược rất nhẹ hoặc bỏ qua.")
         else:
             st.warning(f"💰 **Không có kèo +EV nổi bật**\n\n"
                        f"EV tốt nhất chỉ **{ev_rec['expected_value']:.2f}** (<1) → cân nhắc **bỏ qua** trận.")
     with col2:
         st.info(f"🛡 **Kèo an toàn**\n\n"
-                f"### {rec['name']}\n"
+                f"### {display_name(rec['name'])}\n"
                 f"**{rec['multiplier']:g}x** · {rec['probability']*100:.0f}% _(ROI dài hạn thường âm)_")
 
     # Bảng chi tiết + biểu đồ
@@ -332,38 +448,44 @@ active_tab = st.radio("Chọn mục:", TAB_LABELS, horizontal=True, label_visibi
 if active_tab == TAB_LABELS[0]:
     st.header("Dự đoán trận mới")
 
-    with st.expander("📌 Ghi nhớ: heuristic thủ công tốt nhất (lọc từ ~120 chiến lược)"):
-        st.caption("Ảnh chụp dữ liệu 237 trận (13/07/2026). Xếp theo **cận dưới CI 95%** — "
-                   "ưu tiên chiến lược bền, phạt ăn may. Cập nhật lại khi data tăng nhiều.")
-        st.markdown(
-            "**🥇 Lõi bền nhất — yêu quái bội 5:** cược mỗi khi có.  \n"
-            "→ thắng **55/143 (38%)** vs bội hàm ý 27%, ROI **+92%**, CI [+50%, +134%].\n\n"
-            "**🥈 Edge thứ 2 — yêu quái bội 9:** thắng **23%** vs hàm ý ~14%, ROI **+103%**, "
-            "CI [+26%, +192%] (thật, nhưng variance lớn hơn bội 5).\n\n"
-            "**🔗 Chiến lược lai tốt nhất:** Thầy **≥18 → Thầy**; còn lại → **bội 5** "
-            "(nếu không có 5 thì bội 9). ROI **+91%**, CI [+22%, +167%].\n\n"
-            "**🤖 Model (LOO) để so:** ROI ~+41–60%, CI vượt 0."
+    with st.expander("📌 Ghi nhớ: kèo heuristic theo bội (TỰ TÍNH từ data sống)"):
+        import strategy_analysis as sa
+        _hs = sa.compute_heuristic_summary(_cached_sa_rounds())
+        st.caption(
+            f"Tự tính lại trên **{_hs['n_rounds']} trận** (không còn viết tay/lỗi thời). "
+            "Xếp theo **cận dưới CI 95% bootstrap** — ưu tiên kèo bền, phạt ăn may. "
+            "Chỉ theo **giá trị bội** (tín hiệu thật); kèo theo TÊN đa phần chỉ ăn ké "
+            "hiệu ứng bội (18 tên = nhiều so sánh, dễ ngộ nhận)."
         )
-        st.markdown(
-            "**🏷️ Theo TÊN (đã kiểm soát bội, vẫn thật — CI vượt 0):**  \n"
-            "🥇 **Cược mạnh mọi lúc:** **Bach_nhan_quan** (+117%, thắng 27%), "
-            "**Bach_tuong** (+66%, thắng **45%** — bền nhất), **Hoang_mi_vuong** (+73%), "
-            "**Hong_hai_nhi** (+61%).  \n"
-            "🎯 **Kèo vàng khi ở bội 5:** **Hoang_mi_vuong** (56%), **Dai_bang_kim_si** (55%).  \n"
-            "☠️ **Không bao giờ cược:** **Duong_dai_tien** (9%), **Tieu_toan_phong** (7%), "
-            "**Mac_lan** (7%) — lỗ chắc."
-        )
-        st.warning(
-            "☠️ **TRÁNH bội 10:** chỉ **3/69 (4%)**, ROI **−57%** — tệ nhất.  \n"
-            "⚠️ **Bội 3 vẫn lỗ nhẹ** (−4%) dù hay thắng — bội thấp, thắng không bù đủ.  \n"
-            "⚠️ Các bội 4, 6, 7, 8, 11, 12 ROI **CI chạm âm** → không đáng tin, "
-            "chỉ \"ăn ké\" khi nằm chung dải với bội 5. Chỉ **bội 5 và 9** là tín hiệu thật.  \n"
-            "⚠️ **ĐÃ HẠ CẤP — \"Thầy ≥18\":** giờ CI **[−1%, +187%]** (chạm âm), hết đáng tin, "
-            "variance quá lớn (dễ thua 15-20 trận liền).  \n"
-            "⚠️ **ĐÃ HẠ CẤP — Thanh_nguu@5** (59%→**42%**) & **Hac_hung_tinh@9** (mẫu 9) — "
-            "ăn may/mẫu nhỏ, đã hồi quy.",
-            icon="⚠️",
-        )
+        _real = [e for e in _hs["odds_edges"] if e["real"]]
+        _weak = [e for e in _hs["odds_edges"] if not e["real"]]
+        if _real:
+            st.markdown("**✅ Kèo bội có lãi ĐÁNG TIN (CI vượt 0):**")
+            for e in _real:
+                st.markdown(
+                    f"- **Bội {e['odds']}** (yêu quái): thắng {e['win_rate']*100:.0f}% "
+                    f"({e['won']}/{e['n']}), ROI **{e['roi']*100:+.0f}%** "
+                    f"· CI [{e['ci'][0]*100:+.0f}%, {e['ci'][1]*100:+.0f}%]"
+                )
+        if _hs["teacher"]:
+            t = _hs["teacher"]
+            tag = "✅ đáng tin" if t["real"] else "⚠️ CI chạm âm, variance lớn"
+            st.markdown(
+                f"**👨‍🏫 Thầy ≥18 → cược Thầy:** thoát {t['win_rate']*100:.0f}% "
+                f"({t['won']}/{t['n']}), ROI **{t['roi']*100:+.0f}%** "
+                f"· CI [{t['ci'][0]*100:+.0f}%, {t['ci'][1]*100:+.0f}%] ({tag})"
+            )
+        if _weak:
+            _weak_str = ", ".join(
+                f"bội {e['odds']} ({e['roi']*100:+.0f}%)" for e in _weak
+            )
+            st.warning(
+                "⚠️ **Không đáng tin (CI chạm âm — chỉ ăn ké dải bội tốt hoặc lỗ):** "
+                + _weak_str + ".",
+                icon="⚠️",
+            )
+        st.caption("ℹ️ Cùng tín hiệu này mô hình đã tự học ở tầng bội. Đây chỉ là "
+                   "cách nhìn nhanh, vẫn là gambler-friendly — game có yếu tố ngẫu nhiên.")
 
     # Nhập ĐÚNG cấu trúc game: 2 yêu quái bội THẤP (3–5) — luôn là 1 trong 8 con
     # cố định — + 2 yêu quái bội CAO (6–12) — 10 con còn lại. Dropdown tên đã lọc
@@ -379,36 +501,22 @@ if active_tab == TAB_LABELS[0]:
     MONSTER_KEYS = ("lo0_name", "lo0_boi", "lo1_name", "lo1_boi",
                     "hi0_name", "hi0_boi", "hi1_name", "hi1_boi", "t_mult")
 
-    def _avoid_clash(primary_key, secondary_key, options):
-        """2 ô cùng nhóm (tên hoặc bội) lỡ chọn trùng -> tự đẩy ô còn lại sang giá trị khác."""
-        p, s = st.session_state.get(primary_key), st.session_state.get(secondary_key)
-        if p is not None and p == s:
-            remaining = [o for o in options if o != p]
-            if remaining:
-                st.session_state[secondary_key] = remaining[0]
-
     st.subheader("👹 2 con bội THẤP (3–5)")
     cols_lo = st.columns(2)
     with cols_lo[0]:
-        lo0_name = st.segmented_control("Tên (thấp 1)", LOW_MONSTERS, format_func=display_name,
-                                        key="lo0_name", on_change=_avoid_clash,
-                                        args=("lo0_name", "lo1_name", LOW_MONSTERS))
+        lo0_name = _name_selector("Tên (thấp 1)", LOW_MONSTERS, "lo0_name", "lo1_name")
         lo0_boi = st.segmented_control("Bội (thấp 1)", LOW_BOI, default=5, key="lo0_boi")
     with cols_lo[1]:
-        lo1_name_opts = [m for m in LOW_MONSTERS if m != st.session_state.get("lo0_name")]
-        lo1_name = st.segmented_control("Tên (thấp 2)", lo1_name_opts, format_func=display_name, key="lo1_name")
+        lo1_name = _name_selector("Tên (thấp 2)", LOW_MONSTERS, "lo1_name", "lo0_name")
         lo1_boi = st.segmented_control("Bội (thấp 2)", LOW_BOI, default=3, key="lo1_boi")
 
     st.subheader("👺 2 con bội CAO (6–12)")
     cols_hi = st.columns(2)
     with cols_hi[0]:
-        hi0_name = st.segmented_control("Tên (cao 1)", HIGH_MONSTERS, format_func=display_name,
-                                        key="hi0_name", on_change=_avoid_clash,
-                                        args=("hi0_name", "hi1_name", HIGH_MONSTERS))
+        hi0_name = _name_selector("Tên (cao 1)", HIGH_MONSTERS, "hi0_name", "hi1_name")
         hi0_boi = st.segmented_control("Bội (cao 1)", HIGH_BOI, default=9, key="hi0_boi")
     with cols_hi[1]:
-        hi1_name_opts = [m for m in HIGH_MONSTERS if m != st.session_state.get("hi0_name")]
-        hi1_name = st.segmented_control("Tên (cao 2)", hi1_name_opts, format_func=display_name, key="hi1_name")
+        hi1_name = _name_selector("Tên (cao 2)", HIGH_MONSTERS, "hi1_name", "hi0_name")
         hi1_boi = st.segmented_control("Bội (cao 2)", HIGH_BOI, default=6, key="hi1_boi")
 
     monsters = [
@@ -630,25 +738,18 @@ elif active_tab == TAB_LABELS[2]:
                 "ROI có thể đảo dấu khi thêm dữ liệu. Đừng coi là chắc chắn.**"
             )
 
-            # ROI "theo mô hình" (leave-one-out) là phần TỐN KÉM ~chục giây. Để mở
-            # web KHÔNG phải tính lại: kết quả được LƯU RA ĐĨA (model_picks_cache.json)
-            # kèm số trận. Khi mở web, nếu cache còn khớp số trận → LOAD ngay (như
-            # tuned_params). Chỉ khi thêm trận mới (cache lỗi thời) mới cần bấm nút
-            # tính lại 17s — lúc đó kết quả được ghi đè để các lần sau lại chỉ load.
-            model_strats = []
+            # ROI "theo mô hình" (leave-one-out). Từ 2026-07-20 LOO chỉ ~1.2s
+            # (predictor pure function) nên TỰ TÍNH luôn, không cần nút bấm. Cache
+            # 2 tầng: (1) meta trên Turso dùng chung PC↔Cloud (khớp số trận + tham
+            # số thì load ngay, kể cả sau restart / từ máy khác), (2) @st.cache_data
+            # trong phiên. Vừa thêm trận / đổi tham số → tự tính lại rồi ghi meta.
             n_now = len(sa_rounds)
-            picks = sa.load_model_picks_cache(n_now)
-
-            if picks is None and st.session_state.get("show_model_roi"):
-                # Cache lỗi thời/chưa có và người dùng đã bấm tính → replay rồi lưu.
-                try:
+            picks = sa.load_model_picks_cache(n_now)  # từ Turso meta
+            if picks is None:
+                with st.spinner("Đang tính ROI mô hình (leave-one-out, ~1-2 giây)..."):
                     picks = _cached_model_picks(n_now)
-                    sa.save_model_picks_cache(picks, n_now)
-                except Exception as _e:
-                    st.caption(f"⚠️ Không tính được ROI mô hình leave-one-out: {_e}")
-                st.session_state.pop("show_model_roi", None)
+                    sa.save_model_picks_cache(picks, n_now)  # ghi meta cho PC/Cloud dùng chung
 
-            # Slider LUÔN hiện (không biến mất khi data đổi / cache lỗi thời).
             ev_thr = st.slider(
                 "Ngưỡng EV để lọc trận (cho dòng \"chỉ khi EV ≥ …\")",
                 min_value=1.0, max_value=4.0, value=2.0, step=0.1,
@@ -656,17 +757,7 @@ elif active_tab == TAB_LABELS[2]:
                      "EV con tốt nhất trong dữ liệu hiện tại nằm khoảng 1.4–5.4 → "
                      "đặt ~2.0 trở lên mới thực sự lọc bớt trận.",
             )
-
-            if picks is not None:
-                # Lọc theo ngưỡng EV là tức thì nên kéo slider không lag.
-                model_strats = sa.aggregate_model_strategies(picks, ev_threshold=ev_thr)
-            else:
-                # Cache lỗi thời (vừa thêm trận / đổi tham số) → nút tính lại; slider
-                # vẫn ở trên, bấm xong sẽ áp dụng ngay.
-                st.caption("⏳ Data vừa đổi — cần tính lại ROI mô hình (leave-one-out).")
-                if st.button("▶️ Tính **ROI theo mô hình** (~chục giây, lưu lại cho lần sau)"):
-                    st.session_state["show_model_roi"] = True
-                    st.rerun()
+            model_strats = sa.aggregate_model_strategies(picks, ev_threshold=ev_thr)
 
             all_strats = model_strats + sa.compute_strategies(sa_rounds)
 
@@ -795,51 +886,21 @@ elif active_tab == TAB_LABELS[2]:
     except (OSError, ValueError):
         st.info("Chưa có `tuned_params.json` — bấm nút dưới để tạo lần đầu (đang dùng giá trị mặc định).")
 
-    if st.button("▶️ Chạy tinh chỉnh ngay", type="primary"):
-        import subprocess, sys, importlib
-        from tune_shrinkage import TOTAL_COMBOS
+    # Auto-retune tại mốc 50 trận: khi tổng số trận vượt (mốc tune gần nhất + 50),
+    # tự chạy tinh chỉnh 1 lần (không cần bấm). Chống chạy chồng bằng cờ phiên.
+    _n_total = _cached_overall_stats()["total"]
+    _tuned_at = db.get_meta("tuned_at_rounds", 0) or 0
+    _due = _n_total >= _tuned_at + 50
+    _auto_key = f"auto_tuned_{_n_total // 50}"  # 1 lần / mốc 50
+    if _due:
+        st.info(f"🔔 Đã đạt **{_n_total} trận** (mốc tune gần nhất: {_tuned_at}). "
+                "Tự động tinh chỉnh lại tham số theo dữ liệu mới...")
 
-        progress = st.progress(0.0, text=f"Bắt đầu quét 0/{TOTAL_COMBOS} tổ hợp...")
-        log_box = st.empty()
-        env = {**os.environ, "PYTHONUNBUFFERED": "1"}
-        proc = subprocess.Popen(
-            [sys.executable, "-u", "tune_shrinkage.py"],
-            cwd=os.path.dirname(os.path.abspath(__file__)),
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", errors="replace", bufsize=1, env=env,
-        )
-        lines, done = [], 0
-        for line in proc.stdout:
-            line = line.rstrip("\n")
-            lines.append(line)
-            tok = line.strip().split()
-            # Mỗi dòng dữ liệu (1 tổ hợp) bắt đầu bằng số (cột indK).
-            if tok and tok[0].lstrip("-").isdigit():
-                done += 1
-                progress.progress(
-                    min(done / TOTAL_COMBOS, 1.0),
-                    text=f"Đã quét {done}/{TOTAL_COMBOS} tổ hợp...",
-                )
-            log_box.code("\n".join(lines[-14:]), language="text")
-        proc.wait()
-        progress.empty()
-
-        reloaded = False
-        if proc.returncode == 0:
-            try:  # Nạp lại tham số mới cho phiên đang chạy (best-effort).
-                import config as _cfg
-                importlib.reload(_cfg)
-                importlib.reload(pred)
-                reloaded = True
-            except Exception:
-                reloaded = False
-        st.session_state["tune_result"] = {
-            "ok": proc.returncode == 0,
-            "code": proc.returncode,
-            "stdout": "\n".join(lines),
-            "stderr": "",
-            "reloaded": reloaded,
-        }
+    _do_tune = st.button("▶️ Chạy tinh chỉnh ngay", type="primary")
+    _do_auto = _due and not st.session_state.get(_auto_key)
+    if _do_tune or _do_auto:
+        st.session_state[_auto_key] = True  # đánh dấu mốc này đã auto-chạy
+        _run_tune_with_progress()
         st.rerun()
 
     # Hiển thị kết quả lần tinh chỉnh gần nhất (giữ qua rerun để đọc được output).

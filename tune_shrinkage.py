@@ -137,3 +137,15 @@ if __name__ == "__main__":
     with open(PARAMS_FILE, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     print(f"\nDa ghi {PARAMS_FILE}. config.py se tu dong dung cac tham so nay.")
+
+    # Ghi thêm vào bảng meta trên Turso (nguồn dùng chung PC<->Cloud) để cả bot
+    # lẫn Web đều thấy bộ tham số mới, và để auto-retune biết mốc trận đã tune.
+    try:
+        import database as _db
+        _db.set_meta("tuned_params", payload)
+        # Mốc auto-retune tính theo TỔNG số trận có kết quả (không phải số trận
+        # được đánh giá n_total = tổng - min_history).
+        _db.set_meta("tuned_at_rounds", len(real_rounds))
+        print("Da dong bo tuned_params vao Turso (bang meta).")
+    except Exception as e:
+        print(f"[WARN] Khong ghi duoc meta len Turso: {e}")

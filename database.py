@@ -129,6 +129,34 @@ def init_db():
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pattern ON rounds(pattern_key)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_winner ON rounds(winner)")
+        # Bảng key-value dùng chung PC↔Cloud: tuned_params, mốc tune gần nhất...
+        # Streamlit Cloud không có đĩa bền nên file JSON local lỗi thời/lệch giữa
+        # 2 nơi — để trong DB thì bot (PC) và Web (Cloud) luôn thấy cùng giá trị.
+        conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+        conn.commit()
+
+
+def get_meta(key: str, default=None):
+    """Đọc 1 giá trị (JSON) từ bảng meta dùng chung. Trả `default` nếu chưa có."""
+    with get_conn() as conn:
+        row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+    if row is None:
+        return default
+    try:
+        return json.loads(row["value"])
+    except (ValueError, TypeError):
+        return default
+
+
+def set_meta(key: str, value) -> None:
+    """Ghi (upsert) 1 giá trị (serialize JSON) vào bảng meta dùng chung."""
+    payload = json.dumps(value, ensure_ascii=False)
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO meta(key, value) VALUES(?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, payload),
+        )
         conn.commit()
 
 

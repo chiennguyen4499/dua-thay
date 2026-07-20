@@ -221,6 +221,35 @@ def _from_individual(all_chars, stats, q, is_teacher_fn, odds_map, hist) -> tupl
     return probs, details
 
 
+def _wilson_ci(p: float, n: int, z: float = 1.96) -> tuple[float, float]:
+    """Khoảng tin cậy Wilson cho xác suất `p` dựa trên `n` mẫu nền.
+
+    Mẫu ít -> khoảng RỘNG (thành thật về độ bất định của ước lượng); mẫu nhiều
+    -> khoảng hẹp. Dùng để hiển thị "xác suất/EV nằm trong khoảng nào" thay vì
+    một con số điểm giả vờ chính xác. `p` là xác suất mô hình đã blend; `n` là
+    số mẫu thực tế đỡ cho ước lượng đó (số lần nhân vật xuất hiện)."""
+    if n <= 0:
+        return (0.0, 1.0)
+    denom = 1 + z * z / n
+    center = (p + z * z / (2 * n)) / denom
+    half = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / denom
+    return (max(0.0, center - half), min(1.0, center + half))
+
+
+def _kelly_fraction(p: float, mult: float, cap: float = 0.05, frac: float = 0.25) -> float:
+    """Tỷ lệ vốn nên cược theo Kelly PHẦN (mặc định ¼-Kelly), có TRẦN `cap`.
+
+    Kelly đầy đủ f* = (p·mult − 1) / (mult − 1) = (EV−1)/(net odds). Kelly đầy đủ
+    dao động rất mạnh (dễ cụt vốn khi p ước lượng sai) nên nhân ¼ và chặn trần 5%
+    vốn. Trả 0 nếu không có lợi thế (EV ≤ 1) hoặc bội ≤ 1."""
+    if mult <= 1:
+        return 0.0
+    full = (p * mult - 1) / (mult - 1)
+    if full <= 0:
+        return 0.0
+    return min(full * frac, cap)
+
+
 def _build_result(monsters, teacher, probs, method, sample_count, details, message) -> dict:
     odds_map = {m["name"]: m["multiplier"] for m in monsters}
     odds_map[teacher["name"]] = teacher["multiplier"]
@@ -251,6 +280,14 @@ def _build_result(monsters, teacher, probs, method, sample_count, details, messa
     sorted_p = sorted(probs.values(), reverse=True)
     top_gap = (sorted_p[0] - sorted_p[1]) if len(sorted_p) >= 2 else 0.0
 
+    # Khoảng bất định + mức cược gợi ý cho kèo EV cao nhất.
+    ev_mult = odds_map.get(best_ev_name, 1.0)
+    ev_p = probs[best_ev_name]
+    # Số mẫu nền cho ước lượng của con này (số lần nó từng xuất hiện).
+    ev_n = details.get(best_ev_name, {}).get("appeared", 0) or 0
+    p_lo, p_hi = _wilson_ci(ev_p, ev_n) if ev_n > 0 else (None, None)
+    kelly = _kelly_fraction(ev_p, ev_mult)
+
     return {
         "method": method,
         "sample_count": sample_count,
@@ -265,9 +302,17 @@ def _build_result(monsters, teacher, probs, method, sample_count, details, messa
         },
         "best_value": {
             "name": best_ev_name,
-            "multiplier": odds_map.get(best_ev_name, 1.0),
-            "probability": probs[best_ev_name],
+            "multiplier": ev_mult,
+            "probability": ev_p,
             "expected_value": ev_map[best_ev_name],
+            # Khoảng khả dĩ (Wilson) cho xác suất & EV — None nếu con này chưa
+            # từng xuất hiện (không có mẫu nền để ước lượng độ rộng).
+            "prob_low": p_lo,
+            "prob_high": p_hi,
+            "ev_low": (p_lo * ev_mult) if p_lo is not None else None,
+            "ev_high": (p_hi * ev_mult) if p_hi is not None else None,
+            # Mức cược gợi ý (¼-Kelly, trần 5% vốn); 0 nếu không có lợi thế.
+            "stake_fraction": kelly,
         },
         "message": message,
     }
@@ -334,7 +379,19 @@ def format_prediction_text(pred: dict, monsters: list[dict], teacher: dict) -> s
             f"💰 *Kèo giá trị*: {display_name(ev['name'])} ({ev['multiplier']:g}x) — "
             f"EV={ev['expected_value']:.2f}, thắng ~{ev['probability']*100:.1f}%"
         )
-        lines.append("   _EV>1 = lời về dài hạn, nhưng thắng ít → variance cao, cược nhẹ._")
+        if ev.get("ev_low") is not None:
+            lines.append(
+                f"   _Khoảng khả dĩ: EV {ev['ev_low']:.2f}–{ev['ev_high']:.2f} · "
+                f"thắng {ev['prob_low']*100:.0f}–{ev['prob_high']*100:.0f}%_"
+            )
+        stake = ev.get("stake_fraction", 0) or 0
+        if stake > 0:
+            lines.append(
+                f"   💵 _Mức cược gợi ý: ~{stake*100:.1f}% vốn (¼-Kelly, trần 5%) — "
+                f"EV>1 lời dài hạn nhưng variance cao._"
+            )
+        else:
+            lines.append("   _EV>1 nhưng lợi thế mỏng → cược rất nhẹ hoặc bỏ qua._")
     else:
         lines.append(
             f"💰 _Không có kèo +EV nổi bật (EV tốt nhất chỉ {ev['expected_value']:.2f}). "
