@@ -95,6 +95,18 @@ def _cached_sa_rounds():
 
 
 @st.cache_data(show_spinner=False)
+def _cached_heuristic_summary(n_rounds_with_winner: int):
+    """Ghi nhớ heuristic (có bootstrap CI ~2000 lần/bội) — cache theo SỐ TRẬN.
+
+    Trước đây gọi thẳng `compute_heuristic_summary` trong expander → chạy lại MỖI
+    rerun (kể cả expander đang đóng, Streamlit vẫn tính nội dung), nên mỗi lần
+    chạm nút chọn yêu quái là bootstrap lại từ đầu → 'xoay' khó chịu. Cache theo
+    số trận: chỉ tính lại khi có kết quả mới."""
+    import strategy_analysis as sa
+    return sa.compute_heuristic_summary(sa.load_rounds())
+
+
+@st.cache_data(show_spinner=False)
 def _cached_pred_rounds():
     """Toàn bộ trận có kết quả — truyền cho `predict()` để nó KHÔNG round-trip
     Turso (predictor giờ là pure function nhận list trận). Cache theo phiên; đổi
@@ -121,6 +133,7 @@ def _bust_data_cache():
     _cached_recent_rounds.clear()
     _cached_sa_rounds.clear()
     _cached_pred_rounds.clear()
+    _cached_heuristic_summary.clear()
     _cached_high_odds_appearances.clear()
     _cached_teacher_appearances.clear()
 
@@ -453,7 +466,7 @@ if active_tab == TAB_LABELS[0]:
 
     with st.expander("📌 Ghi nhớ: kèo heuristic theo bội (TỰ TÍNH từ data sống)"):
         import strategy_analysis as sa
-        _hs = sa.compute_heuristic_summary(_cached_sa_rounds())
+        _hs = _cached_heuristic_summary(_cached_overall_stats()["total"])
         st.caption(
             f"Tự tính lại trên **{_hs['n_rounds']} trận** (không còn viết tay/lỗi thời). "
             "Xếp theo **cận dưới CI 95% bootstrap** — ưu tiên kèo bền, phạt ăn may. "
