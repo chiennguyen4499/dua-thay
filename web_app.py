@@ -73,6 +73,40 @@ def _require_pin():
         else:
             st.session_state["pin_fails"] = fails + 1
             st.error(f"❌ PIN không đúng (đã sai {fails + 1} lần).")
+
+    # st.text_input không cho đặt inputmode/autofocus. Chèn JS (iframe cùng origin
+    # nên với tới parent DOM) để: (1) ép BÀN PHÍM SỐ trên mobile (inputmode
+    # numeric — trình duyệt hiện vẫn tôn trọng dù input là password), (2) TỰ FOCUS
+    # vào ô PIN khi mở trang. Lưu ý: iOS/Android thường CHẶN tự bật bàn phím nếu
+    # focus không do người dùng chạm — nên focus đặt được con trỏ, còn bàn phím có
+    # thể chỉ bật khi chạm; nhưng khi chạm sẽ ra đúng bàn phím số.
+    # st.iframe với chuỗi HTML → nhúng bằng srcdoc (CÙNG origin) nên JS với tới
+    # được parent DOM. Dùng st.iframe (không phải components.v1.html đã deprecated
+    # + sắp gỡ) để an toàn khi Cloud cập nhật Streamlit (requirements: >=1.40).
+    st.iframe(
+        """
+        <script>
+        try {
+          const doc = window.parent.document;
+          const setup = () => {
+            const inp = doc.querySelector('input[type="password"]');
+            if (!inp) return false;
+            inp.setAttribute('inputmode', 'numeric');   // bàn phím SỐ trên mobile
+            inp.setAttribute('pattern', '[0-9]*');
+            inp.setAttribute('enterkeyhint', 'go');
+            inp.setAttribute('autocomplete', 'off');
+            try { inp.focus({preventScroll: true}); } catch (e) { inp.focus(); }
+            return true;
+          };
+          if (!setup()) {
+            let n = 0;
+            const iv = setInterval(() => { if (setup() || ++n > 30) clearInterval(iv); }, 80);
+          }
+        } catch (e) { /* origin lạ → bỏ qua, ô PIN vẫn dùng bình thường */ }
+        </script>
+        """,
+        height=1,
+    )
     st.stop()  # Chưa xác thực → dừng tại đây, không render gì thêm.
 
 _require_pin()
