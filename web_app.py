@@ -163,27 +163,8 @@ with st.sidebar:
     _sc = st.columns(2)
     _sc[0].metric("Thầy thoát", f"{_ov['teacher_win_rate']:.0f}%")
     _sc[1].metric("Chờ nhập KQ", _ov["pending"])
-
-    # Dọn các trận chưa nhập kết quả (winner=NULL) — có xác nhận
     if _ov["pending"] > 0:
-        if not st.session_state.get("confirm_clean"):
-            if st.button(f"🧹 Dọn {_ov['pending']} trận chưa có KQ", width="stretch"):
-                st.session_state["confirm_clean"] = True
-                st.rerun()
-        else:
-            st.warning(f"Xóa vĩnh viễn **{_ov['pending']}** trận chưa nhập kết quả?")
-            _cc = st.columns(2)
-            if _cc[0].button("✅ Xóa", type="primary", width="stretch"):
-                n = db.delete_pending_rounds()
-                _bust_data_cache()
-                st.session_state.pop("confirm_clean", None)
-                st.session_state.pop("pred", None)        # tránh trỏ tới trận đã xóa
-                st.session_state.pop("last_round_id", None)
-                st.toast(f"Đã xóa {n} trận chưa có KQ.")
-                st.rerun()
-            if _cc[1].button("Hủy", width="stretch"):
-                st.session_state.pop("confirm_clean", None)
-                st.rerun()
+        st.caption("🧹 Dọn trận chưa có KQ ở tab **📝 Nhập kết quả**.")
 
     st.divider()
     st.markdown(
@@ -195,8 +176,30 @@ with st.sidebar:
         "→ Bot học dần, dự đoán tốt hơn."
     )
 
-def _set_state(key, value):
-    st.session_state[key] = value
+def _pick_monster(group_key, default_boi, name):
+    """Chọn 1 con vào nhóm (tối đa 2). Con đã chọn hoặc nhóm đã đủ 2 → bỏ qua
+    (sửa bội ở hàng ▸ bên dưới, xoá bằng nút ✕) — chạm lại KHÔNG bỏ chọn."""
+    sel = st.session_state[group_key]
+    if name in sel or len(sel) >= 2:
+        return
+    sel[name] = default_boi
+
+
+def _remove_monster(group_key, name):
+    st.session_state[group_key].pop(name, None)
+    st.session_state.pop(f"{group_key}_boi__{name}", None)
+
+
+def _reset_selection():
+    """Xoá toàn bộ lựa chọn quái + kết quả dự đoán (callback nút 'Nhập trận mới').
+    Dùng on_click (chạy TRƯỚC khi render lại) nên không phụ thuộc thứ tự/st.rerun."""
+    st.session_state["sel_low"] = {}
+    st.session_state["sel_high"] = {}
+    for _k in [k for k in list(st.session_state.keys())
+               if k.startswith(("sel_low_boi__", "sel_high_boi__"))]:
+        st.session_state.pop(_k, None)
+    st.session_state.pop("pred", None)
+    st.session_state.pop("last_round_id", None)
 
 
 def _run_tune_with_progress():
@@ -244,31 +247,50 @@ def _run_tune_with_progress():
     }
 
 
-def _name_selector(label, options, key, sibling_key):
-    """Lưới nút chọn tên. Số nút LUÔN cố định (không lọc bớt) nên không nhảy
-    layout khi slot kia đã chọn; con đã chọn ở slot kia chỉ bị **disable** (mờ,
-    không bấm được) — nhờ vậy 2 slot cùng nhóm không bao giờ trùng tên mà vẫn
-    giữ nguyên vị trí các nút. Lựa chọn lưu ở st.session_state[key]."""
-    st.session_state.setdefault(key, None)
+def _monster_group(title, hint, options, group_key, boi_list, default_boi):
+    """Một khối chọn quái gọn cho mobile: lưới 9 con (3/hàng, bề rộng cố định nên
+    không nhảy layout) + hàng chọn/sửa BỘI cho từng con đã chọn.
+
+    - Chạm con CHƯA chọn (nhóm chưa đủ 2) → chọn với bội mặc định, hàng ▸ hiện ra.
+    - Nhóm đã đủ 2 → các con chưa chọn bị **disable** (mờ) để chống chọn dư.
+    - Con ĐÃ chọn: nút primary hiện "tên ·bội"; chạm lại không bỏ chọn — muốn đổi
+      bội thì bấm ở hàng ▸ bên dưới, muốn bỏ thì bấm ✕.
+    Trạng thái: st.session_state[group_key] = {tên: bội} (tối đa 2)."""
+    st.session_state.setdefault(group_key, {})
+    sel = st.session_state[group_key]
     st.markdown(
-        f"<div style='font-size:.8rem;color:#808495;margin:.2rem 0'>{label}</div>",
+        f"**{title}**  <span style='color:#808495;font-size:.8rem'>{hint}</span>",
         unsafe_allow_html=True,
     )
-    taken = st.session_state.get(sibling_key)
+    full = len(sel) >= 2
     per_row = 3
     for start in range(0, len(options), per_row):
-        chunk = options[start:start + per_row]
         cols = st.columns(per_row)  # cố định per_row -> bề rộng nút ổn định
-        for col, opt in zip(cols, chunk):
-            with col:
-                is_sel = st.session_state[key] == opt
-                st.button(
-                    display_name(opt), key=f"{key}__{opt}", width="stretch",
-                    type="primary" if is_sel else "secondary",
-                    disabled=(opt == taken),
-                    on_click=_set_state, args=(key, opt),
-                )
-    return st.session_state[key]
+        for col, opt in zip(cols, options[start:start + per_row]):
+            is_sel = opt in sel
+            # Nhãn đọc thẳng giá trị widget bội (persist trong session_state) để
+            # không trễ 1 nhịp khi đổi bội — lưới nút render TRƯỚC hàng bội.
+            cur_boi = st.session_state.get(f"{group_key}_boi__{opt}", sel[opt]) if is_sel else None
+            lbl = f"{display_name(opt)} ·{cur_boi}" if is_sel else display_name(opt)
+            col.button(
+                lbl, key=f"{group_key}__{opt}", width="stretch",
+                type="primary" if is_sel else "secondary",
+                disabled=(full and not is_sel),
+                on_click=_pick_monster, args=(group_key, default_boi, opt),
+            )
+    # Hàng chọn/sửa bội cho từng con đã chọn.
+    for name in list(sel.keys()):
+        c = st.columns([4, 7, 1], vertical_alignment="center")
+        c[0].markdown(f"▸ **{display_name(name)}**")
+        chosen = c[1].segmented_control(
+            "bội", boi_list, default=sel[name],
+            key=f"{group_key}_boi__{name}", label_visibility="collapsed",
+        )
+        if chosen is not None:
+            sel[name] = chosen
+        c[2].button("✕", key=f"{group_key}_rm__{name}",
+                    on_click=_remove_monster, args=(group_key, name))
+    return sel
 
 
 # ─── Helper: render 1 kết quả dự đoán (sống qua rerun + ghi KQ tại chỗ) ──
@@ -511,92 +533,70 @@ if active_tab == TAB_LABELS[0]:
         st.caption("ℹ️ Cùng tín hiệu này mô hình đã tự học ở tầng bội. Đây chỉ là "
                    "cách nhìn nhanh, vẫn là gambler-friendly — game có yếu tố ngẫu nhiên.")
 
-    # Nhập ĐÚNG cấu trúc game: 2 yêu quái bội THẤP (3–5) — luôn là 1 trong 8 con
-    # cố định — + 2 yêu quái bội CAO (6–12) — 10 con còn lại. Dropdown tên đã lọc
-    # sẵn theo nhóm nên không phải dò cả 18 con. Tên trong cùng nhóm không được trùng
-    # (callback tự đẩy con còn lại sang tên khác), nhưng BỘI được phép trùng
-    # (thực tế vẫn có trường hợp 2 con cùng bội 5, hoặc 2 con cùng bội 9).
-    # Không bọc st.form: các truy vấn nặng đã @st.cache_data ở trên, nên rerun
-    # mỗi lần chọn không tốn round-trip Turso — không cần chặn rerun nữa.
+    # Cấu trúc game: 2 yêu quái bội THẤP (3–5) — 9 con cố định — + 2 yêu quái bội
+    # CAO (6–12) — 9 con còn lại. UX mobile: mỗi nhóm liệt kê đủ 9 con (3/hàng),
+    # CHẠM để chọn (tối đa 2/nhóm) rồi chọn bội ngay dưới con đó. Gọn hơn hẳn kiểu
+    # 4 slot × 9 nút cũ (giờ chỉ 18 nút thay vì 36). Bội được phép trùng (2 con
+    # cùng bội 5 / cùng bội 9 vẫn xảy ra); tên không trùng vì mỗi con chỉ chọn 1 lần.
     LOW_MONSTERS = sorted(["Bach_tuong", "Thanh_nguu", "Loc_dai_tien", "Dai_bang_kim_si",
                            "Hong_hai_nhi", "Lao_ban", "Thanh_su", "Xich_vy_ma_hat", "Hoang_mi_vuong"])
     HIGH_MONSTERS = [m for m in sorted(KNOWN_MONSTERS) if m not in LOW_MONSTERS]
     LOW_BOI, HIGH_BOI = [3, 4, 5], [6, 7, 8, 9, 10, 11, 12]
-    MONSTER_KEYS = ("lo0_name", "lo0_boi", "lo1_name", "lo1_boi",
-                    "hi0_name", "hi0_boi", "hi1_name", "hi1_boi", "t_mult")
 
-    st.subheader("👹 2 con bội THẤP (3–5)")
-    cols_lo = st.columns(2)
-    with cols_lo[0]:
-        lo0_name = _name_selector("Tên (thấp 1)", LOW_MONSTERS, "lo0_name", "lo1_name")
-        lo0_boi = st.segmented_control("Bội (thấp 1)", LOW_BOI, default=5, key="lo0_boi")
-    with cols_lo[1]:
-        lo1_name = _name_selector("Tên (thấp 2)", LOW_MONSTERS, "lo1_name", "lo0_name")
-        lo1_boi = st.segmented_control("Bội (thấp 2)", LOW_BOI, default=3, key="lo1_boi")
+    st.subheader("👹 Chọn 4 yêu quái")
+    sel_low = _monster_group("👹 Bội THẤP — chọn 2", "(3–5)", LOW_MONSTERS, "sel_low", LOW_BOI, 5)
+    st.divider()
+    sel_high = _monster_group("👺 Bội CAO — chọn 2", "(6–12)", HIGH_MONSTERS, "sel_high", HIGH_BOI, 9)
 
-    st.subheader("👺 2 con bội CAO (6–12)")
-    cols_hi = st.columns(2)
-    with cols_hi[0]:
-        hi0_name = _name_selector("Tên (cao 1)", HIGH_MONSTERS, "hi0_name", "hi1_name")
-        hi0_boi = st.segmented_control("Bội (cao 1)", HIGH_BOI, default=9, key="hi0_boi")
-    with cols_hi[1]:
-        hi1_name = _name_selector("Tên (cao 2)", HIGH_MONSTERS, "hi1_name", "hi0_name")
-        hi1_boi = st.segmented_control("Bội (cao 2)", HIGH_BOI, default=6, key="hi1_boi")
+    low_items = list(sel_low.items())
+    high_items = list(sel_high.items())
+    monsters = [{"name": n, "multiplier": float(b)} for n, b in low_items + high_items]
 
-    monsters = [
-        {"name": lo0_name or "", "multiplier": float(lo0_boi or 5)},
-        {"name": lo1_name or "", "multiplier": float(lo1_boi or 3)},
-        {"name": hi0_name or "", "multiplier": float(hi0_boi or 9)},
-        {"name": hi1_name or "", "multiplier": float(hi1_boi or 6)},
-    ]
-
+    st.divider()
     st.subheader("👨‍🏫 Sư Phụ")
     st.caption("Thầy luôn là **Duong_tang** — chỉ cần chọn bội (14–26).")
     TEACHER_BOI = list(range(14, 27))
     t_mult = st.segmented_control("Bội Thầy", TEACHER_BOI, default=18, key="t_mult")
     teacher = {"name": "Duong_tang", "multiplier": float(t_mult or 18)}
 
-    st.divider()
-    submitted = st.button("🔮 Dự đoán ngay!", type="primary", width="stretch")
+    ready = len(low_items) == 2 and len(high_items) == 2
+    if not ready:
+        st.info(f"Đã chọn **{len(low_items)}/2** con bội thấp · **{len(high_items)}/2** con bội cao. "
+                "Chọn đủ **2 + 2** rồi bấm Dự đoán.")
 
-    if submitted:
+    st.divider()
+    submitted = st.button("🔮 Dự đoán ngay!", type="primary", width="stretch",
+                          disabled=not ready)
+
+    if submitted and ready:
         from config import canonical_name
-        names_norm = [canonical_name(m["name"]) for m in monsters]
-        if not all(m["name"].strip() for m in monsters):
-            st.error("Vui lòng chọn đủ tên cho cả 4 yêu quái!")
-        elif len(set(names_norm)) < 4:
-            st.error("⚠️ 4 yêu quái phải khác nhau — đang có tên bị trùng.")
+        # Tên đến từ 2 pool tách rời + mỗi con chỉ chọn 1 lần → luôn đủ 4, không trùng.
+        sig = (
+            tuple(sorted((canonical_name(m["name"]), m["multiplier"]) for m in monsters)),
+            "Duong_tang", teacher["multiplier"],
+        )
+        prev = st.session_state.get("pred")
+        # Bấm lại y hệt trận vừa dự đoán (chưa ghi KQ) → tái dùng round_id
+        # cũ thay vì tạo bản ghi "chờ KQ" mới mỗi lần bấm (tránh rác DB).
+        if prev and prev.get("sig") == sig and prev.get("recorded") is None:
+            round_id = prev["round_id"]
         else:
-            sig = (
-                tuple(sorted((names_norm[i], monsters[i]["multiplier"]) for i in range(4))),
-                canonical_name(teacher["name"]), teacher["multiplier"],
-            )
-            prev = st.session_state.get("pred")
-            # Bấm lại y hệt trận vừa dự đoán (chưa ghi KQ) → tái dùng round_id
-            # cũ thay vì tạo bản ghi "chờ KQ" mới mỗi lần bấm (tránh rác DB).
-            if prev and prev.get("sig") == sig and prev.get("recorded") is None:
-                round_id = prev["round_id"]
-            else:
-                round_id = db.save_round(monsters, teacher, winner=None, source="web")
-                _bust_data_cache()  # trận mới -> đổi "Chờ nhập KQ" / danh sách trận
-            with st.spinner("Đang tính toán..."):
-                prediction = pred.predict(monsters, teacher, _cached_pred_rounds())
-            st.session_state["pred"] = {
-                "prediction": prediction, "monsters": monsters, "sig": sig,
-                "teacher": teacher, "round_id": round_id, "recorded": None,
-            }
-            st.session_state["last_round_id"] = round_id
+            round_id = db.save_round(monsters, teacher, winner=None, source="web")
+            _bust_data_cache()  # trận mới -> đổi "Chờ nhập KQ" / danh sách trận
+        with st.spinner("Đang tính toán..."):
+            prediction = pred.predict(monsters, teacher, _cached_pred_rounds())
+        st.session_state["pred"] = {
+            "prediction": prediction, "monsters": monsters, "sig": sig,
+            "teacher": teacher, "round_id": round_id, "recorded": None,
+        }
+        st.session_state["last_round_id"] = round_id
 
     # Kết quả sống qua mọi rerun (không biến mất khi bấm nút khác)
     if "pred" in st.session_state:
         st.divider()
         render_prediction(st.session_state["pred"])
-        if st.button("🆕 Nhập trận mới", width="stretch"):
-            for _k in MONSTER_KEYS:
-                st.session_state.pop(_k, None)
-            st.session_state.pop("pred", None)
-            st.session_state.pop("last_round_id", None)
-            st.rerun()
+        st.button("🆕 Nhập trận mới", key="btn_new_round", width="stretch",
+                  on_click=_reset_selection)
 
 
 # ─── Tab 2: Nhập kết quả ─────────────────────────────────────
@@ -605,6 +605,30 @@ elif active_tab == TAB_LABELS[1]:
     st.header("Nhập kết quả trận")
     st.caption("💡 Cách nhanh nhất: bấm nút người thắng **ngay dưới kết quả ở tab Dự đoán**. "
                "Tab này để nhập cho các trận cũ còn sót.")
+
+    # Dọn các trận chưa nhập kết quả (winner=NULL) — có xác nhận. Đặt ở màn chính
+    # (không còn trong sidebar) để mobile dùng được mà không phải mở menu ☰.
+    _pending_total = _cached_overall_stats()["pending"]
+    if _pending_total > 0:
+        if not st.session_state.get("confirm_clean"):
+            if st.button(f"🧹 Dọn {_pending_total} trận chưa có KQ", width="stretch"):
+                st.session_state["confirm_clean"] = True
+                st.rerun()
+        else:
+            st.warning(f"Xóa vĩnh viễn **{_pending_total}** trận chưa nhập kết quả?")
+            _cc = st.columns(2)
+            if _cc[0].button("✅ Xóa hết", type="primary", width="stretch"):
+                n = db.delete_pending_rounds()
+                _bust_data_cache()
+                st.session_state.pop("confirm_clean", None)
+                st.session_state.pop("pred", None)        # tránh trỏ tới trận đã xóa
+                st.session_state.pop("last_round_id", None)
+                st.toast(f"Đã xóa {n} trận chưa có KQ.")
+                st.rerun()
+            if _cc[1].button("Hủy", width="stretch"):
+                st.session_state.pop("confirm_clean", None)
+                st.rerun()
+        st.divider()
 
     recent = _cached_recent_rounds(30)
     pending = [r for r in recent if r["winner"] is None]
