@@ -363,18 +363,21 @@ def _monster_group(title, hint, options, group_key, boi_list, default_boi):
                     disabled=(full and not is_sel),
                     on_click=_pick_monster, args=(group_key, default_boi, opt),
                 )
-        # Hàng chọn/sửa bội cho từng con đã chọn: tên · bội · ✕ trên 1 dòng.
-        for name in list(sel.keys()):
-            c = st.columns([4, 7, 1], vertical_alignment="center")
-            c[0].markdown(f"▸ **{display_name(name)}**")
-            chosen = c[1].segmented_control(
-                "bội", boi_list, default=sel[name],
-                key=f"{group_key}_boi__{name}", label_visibility="collapsed",
-            )
-            if chosen is not None:
-                sel[name] = chosen
-            c[2].button("✕", key=f"{group_key}_rm__{name}",
-                        on_click=_remove_monster, args=(group_key, name))
+    # Hàng chọn/sửa bội cho từng con đã chọn — container RIÊNG (mgboi_) để style
+    # khác lưới: tên · bội · ✕ trên 1 dòng, nút bội cỡ thoải mái (không bé tí).
+    if sel:
+        with st.container(key=f"mgboi_{group_key}"):
+            for name in list(sel.keys()):
+                c = st.columns([5, 7, 1], vertical_alignment="center")
+                c[0].markdown(f"▸ **{display_name(name)}**")
+                chosen = c[1].segmented_control(
+                    "bội", boi_list, default=sel[name],
+                    key=f"{group_key}_boi__{name}", label_visibility="collapsed",
+                )
+                if chosen is not None:
+                    sel[name] = chosen
+                c[2].button("✕", key=f"{group_key}_rm__{name}",
+                            on_click=_remove_monster, args=(group_key, name))
     return sel
 
 
@@ -575,19 +578,19 @@ def _prediction_input():
     HIGH_MONSTERS = [m for m in sorted(KNOWN_MONSTERS) if m not in LOW_MONSTERS]
     LOW_BOI, HIGH_BOI = [3, 4, 5], [6, 7, 8, 9, 10, 11, 12]
 
-    # Ép layout gọn cho MOBILE trong khối chọn quái (scope theo class st-key-mgrid_*):
-    # mặc định st.columns tự xuống 1 cột/hàng khi màn hẹp → ta chặn wrap để giữ
-    # 3 con/hàng và hàng bội (tên·bội·✕) nằm trên 1 dòng. Chỉ ảnh hưởng khối này.
+    # Ép layout gọn cho MOBILE (mặc định st.columns tự xuống 1 cột/hàng khi màn
+    # hẹp). Hai scope: `st-key-mgrid_*` cho LƯỚI quái (3 con/hàng), `st-key-mgboi_*`
+    # cho HÀNG BỘI (tên·bội·✕ 1 dòng, nút bội cỡ thoải mái căn giữa).
     st.markdown(
         """
         <style>
+        /* Lưới quái: 3 con/hàng, không stack */
         div[class*="st-key-mgrid_"] div[data-testid="stHorizontalBlock"]{
             flex-wrap: nowrap !important; gap:.25rem !important;
         }
         div[class*="st-key-mgrid_"] div[data-testid="stColumn"]{
             min-width: 0 !important; flex:1 1 0 !important;
         }
-        /* Nút quái gọn, chữ nhỏ + tự xuống dòng trong nút để không tràn */
         div[class*="st-key-mgrid_"] .stButton button{
             padding:.25rem .15rem !important; min-height:2.4rem;
         }
@@ -595,13 +598,23 @@ def _prediction_input():
             font-size:.70rem !important; line-height:1.05 !important;
             white-space:normal !important; word-break:break-word;
         }
-        /* Bội (segmented) thu nhỏ để tên·bội·✕ vừa 1 dòng (kể cả 7 bội 6–12) */
-        div[class*="st-key-mgrid_"] [data-testid="stButtonGroup"]{ gap:.1rem !important; }
-        div[class*="st-key-mgrid_"] [data-testid="stButtonGroup"] button p{
-            font-size:.62rem !important;
+        /* Hàng bội: tên · bội · ✕ trên 1 dòng; nút bội cỡ THOẢI MÁI, căn giữa
+           (7 bội cao tự xuống 2 hàng trong ô của nó — vẫn dễ bấm). */
+        div[class*="st-key-mgboi_"] div[data-testid="stHorizontalBlock"]{
+            flex-wrap: nowrap !important; gap:.3rem !important; align-items:center;
         }
-        div[class*="st-key-mgrid_"] [data-testid="stButtonGroup"] button{
-            padding:.05rem .2rem !important; min-width:0 !important;
+        div[class*="st-key-mgboi_"] div[data-testid="stColumn"]{ min-width:0 !important; }
+        div[class*="st-key-mgboi_"] div[data-testid="stColumn"]:nth-child(1){ flex:5 1 0 !important; }
+        div[class*="st-key-mgboi_"] div[data-testid="stColumn"]:nth-child(2){ flex:7 1 0 !important; }
+        div[class*="st-key-mgboi_"] div[data-testid="stColumn"]:nth-child(3){ flex:0 0 1.8rem !important; }
+        div[class*="st-key-mgboi_"] [data-testid="stButtonGroup"] > div{
+            justify-content:center !important; gap:.3rem !important; flex-wrap:wrap;
+        }
+        div[class*="st-key-mgboi_"] [data-testid="stButtonGroup"] button{
+            padding:.4rem .85rem !important;
+        }
+        div[class*="st-key-mgboi_"] [data-testid="stButtonGroup"] button p{
+            font-size:.95rem !important;
         }
         </style>
         """,
