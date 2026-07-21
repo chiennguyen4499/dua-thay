@@ -144,6 +144,8 @@ Khi DB < 10 trận: dùng thẳng `q` (xác suất implied từ bội số).
 
 ## 6. Web UI (web_app.py)
 
+**Cổng PIN** (`_require_pin()`, gọi NGAY sau `_init_db_once()`, TRƯỚC mọi UI): chưa `session_state["authed"]` thì render form PIN rồi **`st.stop()`** → không dòng code nào phía dưới chạy, không sidebar/tab nào lộ ra (chống người lạ nghịch URL public, không bypass được vì không đọc query param, session_state ở server). PIN lấy theo `_get_app_pin()`: env/secret `APP_PIN` → `meta['app_pin']` (DB, đổi được, dùng chung PC↔Cloud) → mặc định `"4499"`. Đổi PIN: đặt secret `APP_PIN` hoặc `db.set_meta('app_pin','xxxx')`. Khóa mềm sau 5 lần sai/phiên (`pin_fails`). `APP_PIN` đã thêm vào cầu nối `st.secrets`→`os.environ` ở đầu file.
+
 **Sidebar** hiển thị tổng quan (tổng trận, % thầy thoát, số chờ KQ) + hướng dẫn 3 bước. **Nút 🧹 dọn trận chưa nhập KQ** (`db.delete_pending_rounds()`, xác nhận 2 lần) đã **chuyển ra tab 📝 Nhập kết quả** (màn chính) — trên mobile sidebar bị thu gọn sau menu ☰ nên nút ở đó coi như "biến mất"; đặt ở màn chính để bấm được ngay.
 
 5 "tab" (thực chất là `st.radio(horizontal=True)` + `if/elif`, KHÔNG dùng `st.tabs` — lý do ở mục 9 "cả 5 tab chạy lại trên MỌI tương tác"; chỉ code của mục đang chọn mới thực thi mỗi rerun):

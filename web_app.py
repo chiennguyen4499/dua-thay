@@ -10,7 +10,7 @@ import os
 # trong st.secrets, không tự thành biến môi trường. Đẩy sang os.environ TRƯỚC
 # khi import config/database (2 module đó đọc env bằng os.getenv lúc import).
 try:
-    for _k in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN"):
+    for _k in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "APP_PIN"):
         if _k in st.secrets and not os.getenv(_k):
             os.environ[_k] = st.secrets[_k]
 except Exception:
@@ -29,6 +29,53 @@ def _init_db_once():
     db.init_db()
 
 _init_db_once()
+
+
+# ─── Cổng PIN: phải nhập đúng PIN mới vào được app (chống người lạ nghịch URL
+#     public). Đặt NGAY sau init DB, TRƯỚC mọi UI/sidebar/tab → nếu chưa xác thực
+#     thì st.stop() cắt luôn, không dòng code nào phía dưới chạy (không bypass). ─
+def _get_app_pin() -> str:
+    """PIN theo thứ tự ưu tiên: env/secret APP_PIN (bảo mật nhất trên Cloud) →
+    meta['app_pin'] trên DB (đổi được, dùng chung PC↔Cloud) → mặc định '4499'.
+    Đổi PIN: đặt secret APP_PIN, hoặc chạy db.set_meta('app_pin', 'xxxx')."""
+    pin = os.getenv("APP_PIN")
+    if not pin:
+        try:
+            pin = db.get_meta("app_pin", None)
+        except Exception:
+            pin = None
+    return str(pin).strip() if pin else "4499"
+
+
+def _require_pin():
+    if st.session_state.get("authed"):
+        return
+    correct = _get_app_pin()
+    fails = st.session_state.get("pin_fails", 0)
+
+    st.title("🔒 Nhập PIN để truy cập")
+    st.caption("Ứng dụng riêng — cần đúng PIN mới vào được.")
+    if fails >= 5:
+        # Khóa mềm trong phiên để cản dò PIN (mỗi lần sai lại chờ lâu hơn).
+        st.error("⛔ Sai PIN quá nhiều lần trong phiên này. Hãy tải lại trang "
+                 "(refresh) rồi thử lại.")
+        st.stop()
+
+    with st.form("pin_gate", clear_on_submit=True):
+        pin_in = st.text_input("PIN", type="password", max_chars=16,
+                               placeholder="••••")
+        ok = st.form_submit_button("Vào", type="primary", width="stretch")
+    if ok:
+        if pin_in.strip() == correct:
+            st.session_state["authed"] = True
+            st.session_state["pin_fails"] = 0
+            st.rerun()
+        else:
+            st.session_state["pin_fails"] = fails + 1
+            st.error(f"❌ PIN không đúng (đã sai {fails + 1} lần).")
+    st.stop()  # Chưa xác thực → dừng tại đây, không render gì thêm.
+
+_require_pin()
 
 
 @st.cache_resource(show_spinner=False)

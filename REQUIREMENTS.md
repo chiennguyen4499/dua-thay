@@ -61,6 +61,7 @@ Với mỗi trận, hệ thống trả về:
 - **Lưu trữ**: database online dùng chung (Turso/libSQL) là nguồn dữ liệu sống, để bot (PC) và Web UI (Cloud) luôn thấy cùng dữ liệu. SQLite local (`data/rounds.db`) vẫn giữ lại làm fallback khi chưa cấu hình Turso, cho backtest/tune tham số (chạy nhanh, không qua mạng), và làm lưới an toàn rollback.
 - **Chạy đồng thời**: Telegram bot chạy trên PC (`python main.py` hoặc `--bot`); Web UI chạy như một deployment **riêng biệt** trên Streamlit Cloud, không cùng tiến trình/máy với bot nữa — đồng bộ qua database dùng chung.
 - **Bảo mật**: token Telegram để trong `.env` (không commit). Turso URL/token để trong `.env` (local) và Streamlit Cloud Secrets (Web). Có thể giới hạn `ALLOWED_CHAT_ID`.
+- **Cổng PIN cho Web** (Web UI public nên phải chặn người lạ): mở app phải nhập đúng **PIN** mới vào được — chưa đúng thì **không render bất kỳ nội dung/nút nào** (dừng bằng `st.stop()`, không bypass được). PIN cấu hình được: ưu tiên secret/env `APP_PIN`, rồi `meta['app_pin']` trên DB (đổi được, dùng chung PC↔Cloud), mặc định **`4499`**. Khóa mềm sau 5 lần sai trong phiên để cản dò PIN. (PIN 4 số là bảo mật nhẹ, đủ chặn người nghịch URL; muốn chắc hơn thì đặt `APP_PIN` dài trong Secrets.)
 - **Tiếng Việt**: toàn bộ UI hỗ trợ tiếng Việt. Tên nhân vật lưu dạng không dấu, gạch dưới (vd `Bach_nhan_quan`).
 
 ## 5. Ràng buộc dữ liệu
