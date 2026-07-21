@@ -339,38 +339,42 @@ def _monster_group(title, hint, options, group_key, boi_list, default_boi):
     Trạng thái: st.session_state[group_key] = {tên: bội} (tối đa 2)."""
     st.session_state.setdefault(group_key, {})
     sel = st.session_state[group_key]
-    st.markdown(
-        f"**{title}**  <span style='color:#808495;font-size:.8rem'>{hint}</span>",
-        unsafe_allow_html=True,
-    )
-    full = len(sel) >= 2
-    per_row = 3
-    for start in range(0, len(options), per_row):
-        cols = st.columns(per_row)  # cố định per_row -> bề rộng nút ổn định
-        for col, opt in zip(cols, options[start:start + per_row]):
-            is_sel = opt in sel
-            # Nhãn đọc thẳng giá trị widget bội (persist trong session_state) để
-            # không trễ 1 nhịp khi đổi bội — lưới nút render TRƯỚC hàng bội.
-            cur_boi = st.session_state.get(f"{group_key}_boi__{opt}", sel[opt]) if is_sel else None
-            lbl = f"{display_name(opt)} ·{cur_boi}" if is_sel else display_name(opt)
-            col.button(
-                lbl, key=f"{group_key}__{opt}", width="stretch",
-                type="primary" if is_sel else "secondary",
-                disabled=(full and not is_sel),
-                on_click=_pick_monster, args=(group_key, default_boi, opt),
-            )
-    # Hàng chọn/sửa bội cho từng con đã chọn.
-    for name in list(sel.keys()):
-        c = st.columns([4, 7, 1], vertical_alignment="center")
-        c[0].markdown(f"▸ **{display_name(name)}**")
-        chosen = c[1].segmented_control(
-            "bội", boi_list, default=sel[name],
-            key=f"{group_key}_boi__{name}", label_visibility="collapsed",
+    # Bọc trong container CÓ KEY → có class `st-key-mgrid_<group>` để CSS (ở
+    # _prediction_input) ép lưới 3 con/hàng + hàng bội 1 dòng, KHÔNG stack dọc
+    # trên mobile (mặc định st.columns tự xuống 1 cột/hàng khi màn hẹp).
+    with st.container(key=f"mgrid_{group_key}"):
+        st.markdown(
+            f"**{title}**  <span style='color:#808495;font-size:.8rem'>{hint}</span>",
+            unsafe_allow_html=True,
         )
-        if chosen is not None:
-            sel[name] = chosen
-        c[2].button("✕", key=f"{group_key}_rm__{name}",
-                    on_click=_remove_monster, args=(group_key, name))
+        full = len(sel) >= 2
+        per_row = 3
+        for start in range(0, len(options), per_row):
+            cols = st.columns(per_row)  # cố định per_row -> bề rộng nút ổn định
+            for col, opt in zip(cols, options[start:start + per_row]):
+                is_sel = opt in sel
+                # Nhãn đọc thẳng giá trị widget bội (persist trong session_state)
+                # để không trễ 1 nhịp khi đổi bội — lưới render TRƯỚC hàng bội.
+                cur_boi = st.session_state.get(f"{group_key}_boi__{opt}", sel[opt]) if is_sel else None
+                lbl = f"{display_name(opt)} ·{cur_boi}" if is_sel else display_name(opt)
+                col.button(
+                    lbl, key=f"{group_key}__{opt}", width="stretch",
+                    type="primary" if is_sel else "secondary",
+                    disabled=(full and not is_sel),
+                    on_click=_pick_monster, args=(group_key, default_boi, opt),
+                )
+        # Hàng chọn/sửa bội cho từng con đã chọn: tên · bội · ✕ trên 1 dòng.
+        for name in list(sel.keys()):
+            c = st.columns([4, 7, 1], vertical_alignment="center")
+            c[0].markdown(f"▸ **{display_name(name)}**")
+            chosen = c[1].segmented_control(
+                "bội", boi_list, default=sel[name],
+                key=f"{group_key}_boi__{name}", label_visibility="collapsed",
+            )
+            if chosen is not None:
+                sel[name] = chosen
+            c[2].button("✕", key=f"{group_key}_rm__{name}",
+                        on_click=_remove_monster, args=(group_key, name))
     return sel
 
 
@@ -570,6 +574,39 @@ def _prediction_input():
                            "Hong_hai_nhi", "Lao_ban", "Thanh_su", "Xich_vy_ma_hat", "Hoang_mi_vuong"])
     HIGH_MONSTERS = [m for m in sorted(KNOWN_MONSTERS) if m not in LOW_MONSTERS]
     LOW_BOI, HIGH_BOI = [3, 4, 5], [6, 7, 8, 9, 10, 11, 12]
+
+    # Ép layout gọn cho MOBILE trong khối chọn quái (scope theo class st-key-mgrid_*):
+    # mặc định st.columns tự xuống 1 cột/hàng khi màn hẹp → ta chặn wrap để giữ
+    # 3 con/hàng và hàng bội (tên·bội·✕) nằm trên 1 dòng. Chỉ ảnh hưởng khối này.
+    st.markdown(
+        """
+        <style>
+        div[class*="st-key-mgrid_"] div[data-testid="stHorizontalBlock"]{
+            flex-wrap: nowrap !important; gap:.25rem !important;
+        }
+        div[class*="st-key-mgrid_"] div[data-testid="stColumn"]{
+            min-width: 0 !important; flex:1 1 0 !important;
+        }
+        /* Nút quái gọn, chữ nhỏ + tự xuống dòng trong nút để không tràn */
+        div[class*="st-key-mgrid_"] .stButton button{
+            padding:.25rem .15rem !important; min-height:2.4rem;
+        }
+        div[class*="st-key-mgrid_"] .stButton button p{
+            font-size:.70rem !important; line-height:1.05 !important;
+            white-space:normal !important; word-break:break-word;
+        }
+        /* Bội (segmented) thu nhỏ để tên·bội·✕ vừa 1 dòng (kể cả 7 bội 6–12) */
+        div[class*="st-key-mgrid_"] [data-testid="stButtonGroup"]{ gap:.1rem !important; }
+        div[class*="st-key-mgrid_"] [data-testid="stButtonGroup"] button p{
+            font-size:.62rem !important;
+        }
+        div[class*="st-key-mgrid_"] [data-testid="stButtonGroup"] button{
+            padding:.05rem .2rem !important; min-width:0 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     st.subheader("👹 Chọn 4 yêu quái")
     sel_low = _monster_group("👹 Bội THẤP — chọn 2", "(3–5)", LOW_MONSTERS, "sel_low", LOW_BOI, 5)
