@@ -521,6 +521,69 @@ def _soi_cau_metrics(apps: list[dict]) -> dict:
     }
 
 
+@st.fragment
+def _prediction_input():
+    """Khối CHỌN QUÁI + bội + nút Dự đoán, gói trong `st.fragment`.
+
+    Vì sao: Streamlit chạy lại TOÀN BỘ script mỗi lần bấm widget. Khi chọn tướng/
+    bội, tuy dữ liệu đều đã cache (không round-trip Turso) nhưng cả tab vẫn RENDER
+    LẠI (header, memo heuristic dựng lại markdown, radio tab, 18 nút...) rồi đẩy cả
+    cây widget qua mạng xuống điện thoại → cảm giác "load". Gói khối chọn vào
+    fragment thì mỗi lần chạm CHỈ chạy lại riêng khối này (không đụng phần còn lại
+    của tab) → chọn mượt. Chỉ khi bấm **Dự đoán** mới `st.rerun(scope="app")` để
+    render kết quả nằm NGOÀI fragment."""
+    LOW_MONSTERS = sorted(["Bach_tuong", "Thanh_nguu", "Loc_dai_tien", "Dai_bang_kim_si",
+                           "Hong_hai_nhi", "Lao_ban", "Thanh_su", "Xich_vy_ma_hat", "Hoang_mi_vuong"])
+    HIGH_MONSTERS = [m for m in sorted(KNOWN_MONSTERS) if m not in LOW_MONSTERS]
+    LOW_BOI, HIGH_BOI = [3, 4, 5], [6, 7, 8, 9, 10, 11, 12]
+
+    st.subheader("👹 Chọn 4 yêu quái")
+    sel_low = _monster_group("👹 Bội THẤP — chọn 2", "(3–5)", LOW_MONSTERS, "sel_low", LOW_BOI, 5)
+    st.divider()
+    sel_high = _monster_group("👺 Bội CAO — chọn 2", "(6–12)", HIGH_MONSTERS, "sel_high", HIGH_BOI, 9)
+
+    low_items = list(sel_low.items())
+    high_items = list(sel_high.items())
+    monsters = [{"name": n, "multiplier": float(b)} for n, b in low_items + high_items]
+
+    st.divider()
+    st.subheader("👨‍🏫 Sư Phụ")
+    st.caption("Thầy luôn là **Duong_tang** — chỉ cần chọn bội (14–26).")
+    TEACHER_BOI = list(range(14, 27))
+    t_mult = st.segmented_control("Bội Thầy", TEACHER_BOI, default=18, key="t_mult")
+    teacher = {"name": "Duong_tang", "multiplier": float(t_mult or 18)}
+
+    ready = len(low_items) == 2 and len(high_items) == 2
+    if not ready:
+        st.info(f"Đã chọn **{len(low_items)}/2** con bội thấp · **{len(high_items)}/2** con bội cao. "
+                "Chọn đủ **2 + 2** rồi bấm Dự đoán.")
+
+    st.divider()
+    if st.button("🔮 Dự đoán ngay!", type="primary", width="stretch",
+                 disabled=not ready) and ready:
+        from config import canonical_name
+        # Tên đến từ 2 pool tách rời + mỗi con chỉ chọn 1 lần → luôn đủ 4, không trùng.
+        sig = (
+            tuple(sorted((canonical_name(m["name"]), m["multiplier"]) for m in monsters)),
+            "Duong_tang", teacher["multiplier"],
+        )
+        prev = st.session_state.get("pred")
+        # Bấm lại y hệt trận vừa dự đoán (chưa ghi KQ) → tái dùng round_id cũ.
+        if prev and prev.get("sig") == sig and prev.get("recorded") is None:
+            round_id = prev["round_id"]
+        else:
+            round_id = db.save_round(monsters, teacher, winner=None, source="web")
+            _bust_data_cache()  # trận mới -> đổi "Chờ nhập KQ" / danh sách trận
+        with st.spinner("Đang tính toán..."):
+            prediction = pred.predict(monsters, teacher, _cached_pred_rounds())
+        st.session_state["pred"] = {
+            "prediction": prediction, "monsters": monsters, "sig": sig,
+            "teacher": teacher, "round_id": round_id, "recorded": None,
+        }
+        st.session_state["last_round_id"] = round_id
+        st.rerun(scope="app")  # rerun CẢ app để hiện kết quả (nằm ngoài fragment)
+
+
 # `st.tabs` chạy code của CẢ 5 tab trên mọi rerun (kể cả tab không hiển thị,
 # chỉ ẩn bằng CSS) — dù cache đã giảm số round-trip Turso, code CPU + logic
 # của tab khác vẫn chạy thừa mỗi lần. Dùng `st.radio` (server biết đang chọn
@@ -580,63 +643,9 @@ if active_tab == TAB_LABELS[0]:
         st.caption("ℹ️ Cùng tín hiệu này mô hình đã tự học ở tầng bội. Đây chỉ là "
                    "cách nhìn nhanh, vẫn là gambler-friendly — game có yếu tố ngẫu nhiên.")
 
-    # Cấu trúc game: 2 yêu quái bội THẤP (3–5) — 9 con cố định — + 2 yêu quái bội
-    # CAO (6–12) — 9 con còn lại. UX mobile: mỗi nhóm liệt kê đủ 9 con (3/hàng),
-    # CHẠM để chọn (tối đa 2/nhóm) rồi chọn bội ngay dưới con đó. Gọn hơn hẳn kiểu
-    # 4 slot × 9 nút cũ (giờ chỉ 18 nút thay vì 36). Bội được phép trùng (2 con
-    # cùng bội 5 / cùng bội 9 vẫn xảy ra); tên không trùng vì mỗi con chỉ chọn 1 lần.
-    LOW_MONSTERS = sorted(["Bach_tuong", "Thanh_nguu", "Loc_dai_tien", "Dai_bang_kim_si",
-                           "Hong_hai_nhi", "Lao_ban", "Thanh_su", "Xich_vy_ma_hat", "Hoang_mi_vuong"])
-    HIGH_MONSTERS = [m for m in sorted(KNOWN_MONSTERS) if m not in LOW_MONSTERS]
-    LOW_BOI, HIGH_BOI = [3, 4, 5], [6, 7, 8, 9, 10, 11, 12]
-
-    st.subheader("👹 Chọn 4 yêu quái")
-    sel_low = _monster_group("👹 Bội THẤP — chọn 2", "(3–5)", LOW_MONSTERS, "sel_low", LOW_BOI, 5)
-    st.divider()
-    sel_high = _monster_group("👺 Bội CAO — chọn 2", "(6–12)", HIGH_MONSTERS, "sel_high", HIGH_BOI, 9)
-
-    low_items = list(sel_low.items())
-    high_items = list(sel_high.items())
-    monsters = [{"name": n, "multiplier": float(b)} for n, b in low_items + high_items]
-
-    st.divider()
-    st.subheader("👨‍🏫 Sư Phụ")
-    st.caption("Thầy luôn là **Duong_tang** — chỉ cần chọn bội (14–26).")
-    TEACHER_BOI = list(range(14, 27))
-    t_mult = st.segmented_control("Bội Thầy", TEACHER_BOI, default=18, key="t_mult")
-    teacher = {"name": "Duong_tang", "multiplier": float(t_mult or 18)}
-
-    ready = len(low_items) == 2 and len(high_items) == 2
-    if not ready:
-        st.info(f"Đã chọn **{len(low_items)}/2** con bội thấp · **{len(high_items)}/2** con bội cao. "
-                "Chọn đủ **2 + 2** rồi bấm Dự đoán.")
-
-    st.divider()
-    submitted = st.button("🔮 Dự đoán ngay!", type="primary", width="stretch",
-                          disabled=not ready)
-
-    if submitted and ready:
-        from config import canonical_name
-        # Tên đến từ 2 pool tách rời + mỗi con chỉ chọn 1 lần → luôn đủ 4, không trùng.
-        sig = (
-            tuple(sorted((canonical_name(m["name"]), m["multiplier"]) for m in monsters)),
-            "Duong_tang", teacher["multiplier"],
-        )
-        prev = st.session_state.get("pred")
-        # Bấm lại y hệt trận vừa dự đoán (chưa ghi KQ) → tái dùng round_id
-        # cũ thay vì tạo bản ghi "chờ KQ" mới mỗi lần bấm (tránh rác DB).
-        if prev and prev.get("sig") == sig and prev.get("recorded") is None:
-            round_id = prev["round_id"]
-        else:
-            round_id = db.save_round(monsters, teacher, winner=None, source="web")
-            _bust_data_cache()  # trận mới -> đổi "Chờ nhập KQ" / danh sách trận
-        with st.spinner("Đang tính toán..."):
-            prediction = pred.predict(monsters, teacher, _cached_pred_rounds())
-        st.session_state["pred"] = {
-            "prediction": prediction, "monsters": monsters, "sig": sig,
-            "teacher": teacher, "round_id": round_id, "recorded": None,
-        }
-        st.session_state["last_round_id"] = round_id
+    # Khối chọn quái + bội + nút Dự đoán nằm trong st.fragment (định nghĩa ở trên)
+    # → chạm chọn chỉ rerun riêng khối này, không render lại cả tab.
+    _prediction_input()
 
     # Kết quả sống qua mọi rerun (không biến mất khi bấm nút khác)
     if "pred" in st.session_state:
