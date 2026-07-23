@@ -524,10 +524,6 @@ def render_prediction(state):
                 state["recorded_label"] = "Thầy thoát" if slot == "teacher" else nm
                 st.rerun()
 
-    if st.button("🔄 Dự đoán trận mới", key=f"clear_{round_id}"):
-        st.session_state.pop("pred", None)
-        st.rerun()
-
 
 def _soi_cau_metrics(apps: list[dict]) -> dict:
     """Tính chỉ số "soi cầu" cho 1 chuỗi lần xuất hiện đã SẮP THEO THỜI GIAN.
